@@ -4,6 +4,9 @@
 功能：
 1. 检查检测结果中是否存在重复识别（同一对象被多次检测）
 2. 提供 IOU 去重功能，保留置信度最高的检测框
+
+When the same fin are detected multiple times, try to increase the confidence or filter with IoU.
+https://github.com/ultralytics/ultralytics/issues/5811
 """
 
 import os
