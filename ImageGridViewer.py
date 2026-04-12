@@ -179,7 +179,7 @@ class ImageGridViewer(QWidget):
 
         fin_info = self.cilent.recv()
         images = fin_info["path"]
-        similarity = fin_info["similarity"]
+        annotation = fin_info["annotation"]
         images_id = fin_info["id"]
 
         row, col = 0, 0
@@ -198,7 +198,7 @@ class ImageGridViewer(QWidget):
 
             label.setPixmap(pixmap)
             label.setAlignment(Qt.AlignCenter)
-            textlabel = QLabel("%0.3f"%similarity[i])
+            textlabel = QLabel(annotation[i])
             textlabel.setAlignment(Qt.AlignTop)
 
             self.container.labels.append(label)
@@ -215,6 +215,8 @@ class ImageGridViewer(QWidget):
         confirm_button.clicked.connect(self.onButtonClick)
         layout.addWidget(confirm_button)
         layout.addWidget(self.scroll)
+        self.container.engine.selected = set(self.container.labels)
+        self.container.update_selection_style()
 
         self.setWindowTitle("Hi, Doris")
         self.resize(1080, 720)
@@ -237,7 +239,7 @@ class ImageGridViewer(QWidget):
         # === 步骤 3: 接收新数据 ===
         fin_info = self.cilent.recv()
         images = fin_info["path"]
-        similarity = fin_info["similarity"]
+        annotation = fin_info["annotation"]
         images_id = fin_info["id"]
 
         # === 步骤 4: 填充新内容 ===
@@ -256,13 +258,15 @@ class ImageGridViewer(QWidget):
 
             label.setPixmap(pixmap)
             label.setAlignment(Qt.AlignCenter)
-            textlabel = QLabel("%0.3f" % similarity[i])
+            textlabel = QLabel(annotation[i])
             textlabel.setAlignment(Qt.AlignTop)
 
             self.container.labels.append(label)
             self.container.textlabels.append(textlabel)
             grid.addWidget(label, row, col)
             grid.addWidget(textlabel, row, col, Qt.AlignTop)
+            self.container.engine.selected = set(self.container.labels)
+            self.container.update_selection_style()
 
             col += 1
             if col >= self.cols:
