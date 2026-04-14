@@ -180,7 +180,7 @@ class ImageGridViewer(QWidget):
         fin_info = self.cilent.recv()
         images = fin_info["path"]
         annotation = fin_info["annotation"]
-        images_id = fin_info["id"]
+        images_id = fin_info["idx"]
 
         row, col = 0, 0
 
@@ -240,7 +240,7 @@ class ImageGridViewer(QWidget):
         fin_info = self.cilent.recv()
         images = fin_info["path"]
         annotation = fin_info["annotation"]
-        images_id = fin_info["id"]
+        images_id = fin_info["idx"]
 
         # === 步骤 4: 填充新内容 ===
         row, col = 0, 0

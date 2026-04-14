@@ -99,12 +99,12 @@ def interactive_label_fin_2(root_dir, metainfo, similarity, index, threshold, fi
             #print("no new candidate")
             return [0, fin_id_list, similarity]
     # Send list to GUI
-    receiver.send({"id": wait_user_check_fin_list, 
+    receiver.send({"idx": wait_user_check_fin_list, 
                    "path": wait_user_check_fin_path_list,
                   "annotation": wait_user_check_fin_annotation_list})
     # Receive result from GUI
     user_confirmed_fin_list = receiver.recv()
-    print("labeled fin image id:", labeled_fin_ref_list)
+    print("labeled fin idx:", labeled_fin_ref_list)
     print("user confirmed: %d/%d"%(len(user_confirmed_fin_list), len(wait_user_check_fin_list)))
     same_fin_list =  user_confirmed_fin_list 
     ## Assign new fin label
