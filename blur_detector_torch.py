@@ -424,19 +424,46 @@ class BlurDetector:
                                std=[0.229, 0.224, 0.225])
         ])
     
-    def preprocess(self, image_path):
-        """预处理单张图像"""
-        img = Image.open(image_path).convert('RGB')
+    def _to_pil(self, image_input):
+        """将多种输入类型转换为 PIL Image (RGB)"""
+        if isinstance(image_input, str):
+            return Image.open(image_input).convert('RGB')
+        elif isinstance(image_input, np.ndarray):
+            # OpenCV / numpy array: BGR -> RGB
+            if image_input.ndim == 2:
+                # 灰度图
+                return Image.fromarray(image_input).convert('RGB')
+            elif image_input.ndim == 3 and image_input.shape[2] == 3:
+                img_rgb = cv2.cvtColor(image_input, cv2.COLOR_BGR2RGB)
+                return Image.fromarray(img_rgb)
+            elif image_input.ndim == 3 and image_input.shape[2] == 4:
+                img_rgb = cv2.cvtColor(image_input, cv2.COLOR_BGRA2RGB)
+                return Image.fromarray(img_rgb)
+            else:
+                return Image.fromarray(image_input).convert('RGB')
+        elif isinstance(image_input, Image.Image):
+            return image_input.convert('RGB')
+        else:
+            raise TypeError(f"不支持的图像输入类型: {type(image_input)}")
+
+    def preprocess(self, image_input):
+        """预处理单张图像
+        Args:
+            image_input: 图像路径(str)、PIL Image 或 numpy array
+        """
+        img = self._to_pil(image_input)
         img = self.transform(img)
         img = img.unsqueeze(0)  # 增加 batch 维度
         return img.to(self.device)
     
-    def predict(self, image_path):
+    def predict(self, image_input):
         """
         预测单张图像
+        Args:
+            image_input: 图像路径(str)、PIL Image 或 numpy array
         返回: (类别, 置信度, 概率分布)
         """
-        img = self.preprocess(image_path)
+        img = self.preprocess(image_input)
         
         with torch.no_grad():
             outputs = self.model(img)
@@ -456,11 +483,14 @@ class BlurDetector:
             }
         }
     
-    def predict_batch(self, image_paths):
-        """批量预测"""
+    def predict_batch(self, image_inputs):
+        """批量预测
+        Args:
+            image_inputs: 图像路径/PIL Image/numpy array 的列表
+        """
         images = []
-        for path in image_paths:
-            img = Image.open(path).convert('RGB')
+        for item in image_inputs:
+            img = self._to_pil(item)
             img = self.transform(img)
             images.append(img)
         
@@ -473,11 +503,16 @@ class BlurDetector:
         
         results = []
         for i, (pred, conf) in enumerate(zip(predicted, confidences)):
-            results.append({
-                'path': image_paths[i],
+            result = {
                 'class': self.class_names[pred.item()],
                 'confidence': float(conf.item())
-            })
+            }
+            # 保留路径信息（如果输入是字符串）
+            if isinstance(image_inputs[i], str):
+                result['path'] = image_inputs[i]
+            else:
+                result['index'] = i
+            results.append(result)
         return results
 
 
