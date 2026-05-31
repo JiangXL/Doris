@@ -1,10 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 """从海豚原始图像识别并剪裁背鳍
-
 使用训练后的 YOLO 模型检测背鳍，使用模糊检测模型评估清晰度。
 """
-
 import os
 import sys
 import glob
@@ -18,10 +16,8 @@ from matplotlib import pyplot as plt
 from blur_detector_torch import BlurDetector
 from check_duplicate_detections import filter_duplicate_detections
 
-
 class FinCropper:
     """背鳍检测与剪裁器"""
-
     def __init__(
         self,
         yolo_model_path: str = "models/fin_yolo_best.pt",
@@ -108,7 +104,7 @@ class FinCropper:
         """
         root_dir = root_dir.rstrip(os.sep)
         if output_dir is None:
-            output_dir = root_dir.rstrip(os.sep) +  "_GM"
+            output_dir = root_dir
             print("Automatic set output dir to", output_dir)
         else:
             output_dir = output_dir.rstrip(os.sep)
@@ -185,11 +181,9 @@ class FinCropper:
         annotated = result.plot()
         return Image.fromarray(annotated[..., ::-1])  # BGR -> RGB
 
-
 # ============================================
 # 直接运行示例
 # ============================================
-
 if __name__ == "__main__":
     # 配置路径
     #root_dir = r"/media/filming/2025-白海豚/20240825-JM_02-3/"

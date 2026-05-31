@@ -163,9 +163,10 @@ def interactive_label_fin_2(root_dir, metainfo, similarity, index, threshold, fi
 
 if __name__ == "__main__":
     features = FeatureDataset.from_file(sys.argv[1])
-    root_dir = os.path.split(sys.argv[1])[0]
+    #root_dir = os.path.split(sys.argv[1])[0]
+    root_dir = os.path.split(os.path.split(sys.argv[1])[0])[0]
     metainfo = features.metadata
-    similarity = np.load(root_dir + "/FIN_SIMILARITY.npy")
+    similarity = np.load(root_dir + "/METAINFO/FIN_SIMILARITY.npy")
     threshold = 0.65
 
     with multiprocessing.connection.Listener(
@@ -181,8 +182,8 @@ if __name__ == "__main__":
                     print("\nProcessing %d/%d"%(i, len(features)))
                     features.metadata["FinID"] = fin_id_list
                     features.save(sys.argv[1])
-                    features.metadata.to_csv(root_dir + "/FIN_METAINFO_SELECTED.csv")
-                    np.save(root_dir+"/FIN_SIMILARITY", similarity)
+                    features.metadata.to_csv(root_dir + "/METAINFO/FIN_METAINFO_SELECTED.csv")
+                    np.save(root_dir+"/METAINFO/FIN_SIMILARITY", similarity)
                     print("Labeled fin: %d/%d"%(np.sum(fin_id_list >0), len(fin_id_list)))
                     print("FinID count:", len(np.unique(fin_id_list))-1)
                     #print_fin_distribution(fin_id_list)

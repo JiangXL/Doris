@@ -17,8 +17,10 @@ def TUI():
         choice = input()
         if choice == STEP1:
             print("Locate and Crop Fin") 
+
         elif( choice == STEP2 ):
             print("Filter out low quality and low confidence fin")
+            
         elif( choice == STEP3 ):
             print("Automatic connect high similar fin")
         elif( choice == STEP4):
