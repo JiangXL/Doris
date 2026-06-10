@@ -1,31 +1,67 @@
 import sys
 import os
-from PyQt5.QtWidgets import QApplication
-from ImageGridViewer import ImageGridViewer
+import time
+import subprocess
+from util import select_folder
+from Step1_crop_fin import FinCropper
+from Step2_filter_low_quality import FinQualityFilter
+from Step3_extract_fin_feature import FinFeatureExtractor
+from Step4_sort_fin_automatic import FinFeatureSorter
+from Step5_sort_fin_by_hand import FinInteractiveLabeler
 
-def TUI():
-    choice = 0
-    EXIT = -1
-    STEP1 = 1
-    STEP2 = 2
-    STEP3 = 3
-    STEP4 = 4
-    STEP5 = 5
-    STEP6 = 6
-    STEP7 = 6
+def TUI(root_dir):
+    choice = "0"
+    EXIT = "-1"
+    STEP1 = "1"
+    STEP2 = "2"
+    STEP3 = "3"
+    STEP4 = "4"
+    STEP5 = "5"
+    STEP6 = "6"
+    STEP7 = "7"
     while( True ):
-        choice = input()
-        if choice == STEP1:
+        choice = input("------Dolphin Reidentify Script Toolkit-------------\n" +
+                       "ROOT_DIR: %s\n"%(root_dir) +
+                       "  0: Select Image Root Folder\n" + 
+                       "  1: Locate and Crop Fin\n" +
+                       "  2: Filter quality fin image\n" +
+                       "  3: Compute fin feature fingerprint\n" +
+                       "  4: Auto Cluster High Similar FIN\n" +
+                       "  5: Select Image same with reference\n" + 
+                       " -1: Exit\n" +
+                       "Type Step Number: ")
+        if choice == "0":
+            root_dir = select_folder()
+            print("Working root diretory is ", root_dir)
+        elif choice == STEP1:
             print("Locate and Crop Fin") 
-
+            cropper = FinCroppper()
+            meta_df = cropper.crop(root_dir)
         elif( choice == STEP2 ):
             print("Filter out low quality and low confidence fin")
-            
+            filter_obj = FinQualityFilter(root_dir=root_dir)
+            filter_obj.auto_filter()
+            ret = "N"
+            while (ret != "Y"):
+                ret = input("Done auto filering, please the FIN folder and recorrect result\n"
+                            +"Type Y to continue: ")
+                if ret == "Y":
+                    filter_obj.confirm_filter()
         elif( choice == STEP3 ):
+            extractor = FinFeatureExtractor()
+            extractor.extract(root_dir)
+            print("Compute the fin fingerprint DONE")
+        elif( choice == STEP4 ):
             print("Automatic connect high similar fin")
-        elif( choice == STEP4):
-            print("Manual cofirm the same fin in similar fin image")
+            sorter = FinFeatureSorter(root_dir=root_dir)
+            sorter.run()
         elif( choice == STEP5):
+            print("Manual cofirm the same fin in similar fin image")
+            subprocess.Popen(['python3', f'{os.getcwd()}/ImageGridViewer.py'])
+            time.sleep(2)
+            labeler = FinInteractiveLabeler(root_dir=root_dir)
+            labeler.run()
+        elif( choice == STEP6):
             print("Fine Tune")
         elif( choice == STEP6):
             print("Find Relationship and move to NN folder")
@@ -36,21 +72,14 @@ def TUI():
             print("Exiting now")
             break
         else:
+            print("No correct step number was provide")
             pass
 
 if __name__ == "__main__":
-    # TODO: TUI
-    # Step 1.
-    # Step 2.
-    # Step 3.
-    # Step 4.
-    app = QApplication(sys.argv)
-
-    viewer = ImageGridViewer(
-        cols=5,
-        thumb_size=384
-    )   
-
-    viewer.show()
-    sys.exit(app.exec_())
-
+    import sys
+    #root_dir = "/media/filming/2025-白海豚/20240825-JM_02-3//"
+    if len(sys.argv) == 2:
+        root_dir = sys.argv[1]
+    else:
+        root_dir = None
+    TUI(root_dir)

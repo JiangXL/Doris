@@ -13,6 +13,7 @@ from PIL import Image
 from ultralytics import YOLO
 from matplotlib import pyplot as plt
 
+from util import read_exif_FocusPosition2, select_folder
 from blur_detector_torch import BlurDetector
 from check_duplicate_detections import filter_duplicate_detections
 
@@ -20,7 +21,8 @@ class FinCropper:
     """背鳍检测与剪裁器"""
     def __init__(
         self,
-        yolo_model_path: str = "models/fin_yolo_best.pt",
+        #yolo_model_path: str = "models/fin_yolo_best.pt",
+        yolo_model_path: str = "models/fin_yolo_best.onnx",
         blur_model_path: str = "models/blur_detection_resnet101_final.pth",
         iou_threshold: float = 0.6):
         """
@@ -42,6 +44,7 @@ class FinCropper:
             list[dict]: 该图像检测到的所有背鳍元数据列表
         """
         ori_img_name = os.path.basename(jpg_path)
+        focusposition2 = read_exif_FocusPosition2(jpg_path)
         results = self.fin_detector(jpg_path, verbose=False)
 
         rows = []
@@ -81,6 +84,7 @@ class FinCropper:
                         "orig_img_h": orig_img_h,
                         "orig_img_w": orig_img_w,
                         "clearness": clearness,
+                        "focusposition2": focusposition2,
                     }
                 )
         return rows
@@ -129,6 +133,7 @@ class FinCropper:
                 "orig_img_h",
                 "orig_img_w",
                 "clearness",
+                "focusposition2",
             ]
         )
 
@@ -185,12 +190,14 @@ class FinCropper:
 # 直接运行示例
 # ============================================
 if __name__ == "__main__":
-    # 配置路径
-    #root_dir = r"/media/filming/2025-白海豚/20240825-JM_02-3/"
     if len(sys.argv) == 2:
         root_dir = sys.argv[1]
-    else: 
-        print("No root directory is provided")
+    else:
+        root_dir = select_folder(title="Select folder containing *.JPG images")
+        if root_dir is None:
+            print("No folder selected. Exiting.")
+            sys.exit(0)
+        print(f"Selected folder: {root_dir}")
 
     # 初始化并运行
     cropper = FinCropper()

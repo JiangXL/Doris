@@ -487,6 +487,8 @@ class BlurDetector:
         """批量预测
         Args:
             image_inputs: 图像路径/PIL Image/numpy array 的列表
+        Returns:
+            list[dict]: 每张图像的预测结果，格式与 predict() 一致
         """
         images = []
         for item in image_inputs:
@@ -503,9 +505,15 @@ class BlurDetector:
         
         results = []
         for i, (pred, conf) in enumerate(zip(predicted, confidences)):
+            probs = probabilities[i].cpu().numpy()
             result = {
                 'class': self.class_names[pred.item()],
-                'confidence': float(conf.item())
+                'class_idx': pred.item(),
+                'confidence': float(conf.item()),
+                'probabilities': {
+                    self.class_names[j]: float(probs[j])
+                    for j in range(len(self.class_names))
+                }
             }
             # 保留路径信息（如果输入是字符串）
             if isinstance(image_inputs[i], str):

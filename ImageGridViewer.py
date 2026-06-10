@@ -160,12 +160,17 @@ class SelectableWidget(QWidget):
 class ImageGridViewer(QWidget):
     def __init__(self, cols=5, thumb_size=384):
         super().__init__()
-
         self.cols = cols
         self.thumb_size = thumb_size
-        self.cilent = multiprocessing.connection.Client(
-                ('localhost', 1126), authkey=b'dolphin')
+        self.host = 'localhost'
+        self.port = 1126
+        self.authkey = b'dolphin'
+        self.server = multiprocessing.connection.Listener(
+                (self.host, self.port), authkey=self.authkey)
+        print("Waiting for GUI connection on %s:%d ..." % (self.host, self.port))
+        self.receiver = self.server.accept()
         self.init_ui()
+        print("GUI connected.")
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -177,7 +182,7 @@ class ImageGridViewer(QWidget):
         grid = QGridLayout(self.container)
 
 
-        fin_info = self.cilent.recv()
+        fin_info = self.receiver.recv()
         images = fin_info["path"]
         annotation = fin_info["annotation"]
         images_id = fin_info["idx"]
@@ -225,7 +230,7 @@ class ImageGridViewer(QWidget):
         selected = self.container.engine.get_selected()
         print("Selected:", [l.img_id for l in selected])
         print("*")
-        self.cilent.send([l.img_id for l in selected])
+        self.receiver.send([l.img_id for l in selected])
 
         # === 步骤 1: 删除旧 widget ===
         old_widget = self.scroll.widget()
@@ -237,7 +242,7 @@ class ImageGridViewer(QWidget):
         grid = QGridLayout(self.container)
 
         # === 步骤 3: 接收新数据 ===
-        fin_info = self.cilent.recv()
+        fin_info = self.receiver.recv()
         images = fin_info["path"]
         annotation = fin_info["annotation"]
         images_id = fin_info["idx"]
@@ -275,3 +280,14 @@ class ImageGridViewer(QWidget):
 
         # === 步骤 5: 设置新 widget 到 scroll area ===
         self.scroll.setWidget(self.container)
+
+if __name__ == "__main__":
+    import sys
+    app = QApplication(sys.argv)
+
+    viewer = ImageGridViewer(
+       cols=4,
+       thumb_size=384
+    )
+    viewer.show()
+    sys.exit(app.exec_())

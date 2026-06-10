@@ -24,7 +24,7 @@ class FinFeatureExtractor:
         device=DEFAULT_DEVICE, # 'cuda' or 'cpu'
         img_size = DEFAULT_IMG_SIZE, 
         csv_name='METAINFO/FIN_METAINFO.csv',
-        output_name='METAINFO/DEEPFEATURES',
+        output_name='METAINFO/FIN_DEEPFEATURES',
     ):
         self.model_name = model_name
         self.img_size = img_size

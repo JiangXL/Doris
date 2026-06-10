@@ -85,7 +85,8 @@ class FinQualityFilter:
         self.create_empty_folder(dest_dir)
         for fin in self.metainfo.query(query_str)["path"]:
             src = os.path.join(self.root_dir, fin)
-            dest = os.path.join(dest_dir, fin[4:])
+            #dest = os.path.join(dest_dir, fin[4:])
+            dest = os.path.join(dest_dir, os.path.basename(fin))
             os.symlink(src, dest)
 
     def create_category_folders(self):
@@ -103,10 +104,10 @@ class FinQualityFilter:
     def scan_user_confirmation(self):
         """Scan the SELECTED folder to receive user confirmation (manual moves)."""
         scan_dir = os.path.join(self.root_dir, "FIN", "SELECTED")
-        scan_list = sorted(os.listdir(scan_dir))
-        scanned_img_list = glob.glob(os.path.join(scan_dir, "*.JPG"))
-        scanned_img_list = [os.path.basename(path) for path in scanned_img_list]
-
+        scanned_img_list = sorted(os.listdir(scan_dir))
+        #scanned_img_list = glob.glob(os.path.join(scan_dir, "*.JPG"))
+        #scanned_img_list = [os.path.basename(path) for path in scanned_img_list]
+        
         # Confirm fin images moved into SELECTED folder
         for img_name in scanned_img_list:
             current_select = self.metainfo.loc[self.metainfo["path"] == "FIN/" + img_name, "select"]
