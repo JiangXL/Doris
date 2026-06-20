@@ -228,8 +228,7 @@ class ImageGridViewer(QWidget):
 
     def onButtonClick(self):
         selected = self.container.engine.get_selected()
-        print("Selected:", [l.img_id for l in selected])
-        print("*")
+        print("Picker: Selected", [l.img_id for l in selected])
         self.receiver.send([l.img_id for l in selected])
 
         # === 步骤 1: 删除旧 widget ===

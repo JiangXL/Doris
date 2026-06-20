@@ -4,7 +4,6 @@
 使用训练后的 YOLO 模型检测背鳍，使用模糊检测模型评估清晰度。
 """
 import os
-import sys
 import glob
 import cv2
 from tqdm import tqdm
@@ -190,6 +189,7 @@ class FinCropper:
 # 直接运行示例
 # ============================================
 if __name__ == "__main__":
+    import sys
     if len(sys.argv) == 2:
         root_dir = sys.argv[1]
     else:

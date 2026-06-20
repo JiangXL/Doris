@@ -3,11 +3,14 @@ import os
 import time
 import subprocess
 from util import select_folder
+
 from Step1_crop_fin import FinCropper
 from Step2_filter_low_quality import FinQualityFilter
 from Step3_extract_fin_feature import FinFeatureExtractor
 from Step4_sort_fin_automatic import FinFeatureSorter
 from Step5_sort_fin_by_hand import FinInteractiveLabeler
+from Step6_merge_preview import FinMergePreview
+from Step7_pair_fin import pair_fin
 
 def TUI(root_dir):
     choice = "0"
@@ -19,16 +22,19 @@ def TUI(root_dir):
     STEP5 = "5"
     STEP6 = "6"
     STEP7 = "7"
+    STEP8 = "8"
     while( True ):
         choice = input("------Dolphin Reidentify Script Toolkit-------------\n" +
                        "ROOT_DIR: %s\n"%(root_dir) +
-                       "  0: Select Image Root Folder\n" + 
-                       "  1: Locate and Crop Fin\n" +
-                       "  2: Filter quality fin image\n" +
-                       "  3: Compute fin feature fingerprint\n" +
-                       "  4: Auto Cluster High Similar FIN\n" +
-                       "  5: Select Image same with reference\n" + 
-                       " -1: Exit\n" +
+                       " [ 0]: Select Image Root Folder\n" + 
+                       " [ 1]: Locate and Crop Fin\n" +
+                       " [ 2]: Filter quality fin image\n" +
+                       " [ 3]: Compute fin feature fingerprint\n" +
+                       " [ 4]: Auto Cluster High Similar FIN\n" +
+                       " [ 5]: Select Image same with reference\n" + 
+                       " [ 6]: Merge Preview\n" + 
+                       " [ 7]: Pair Fin and Find Social Relationship Group \n" + 
+                       " [-1]: Exit\n" +
                        "Type Step Number: ")
         if choice == "0":
             root_dir = select_folder()
@@ -41,7 +47,7 @@ def TUI(root_dir):
             print("Filter out low quality and low confidence fin")
             filter_obj = FinQualityFilter(root_dir=root_dir)
             filter_obj.auto_filter()
-            ret = "N"
+            ret = "N" # TODO: move choice inside filter module
             while (ret != "Y"):
                 ret = input("Done auto filering, please the FIN folder and recorrect result\n"
                             +"Type Y to continue: ")
@@ -62,11 +68,15 @@ def TUI(root_dir):
             labeler = FinInteractiveLabeler(root_dir=root_dir)
             labeler.run()
         elif( choice == STEP6):
-            print("Fine Tune")
-        elif( choice == STEP6):
-            print("Find Relationship and move to NN folder")
-            print("Please check and classify sortted group")
+            print("Merge Preview")
+            subprocess.Popen(['python3', f'{os.getcwd()}/ImageGridViewer.py'])
+            time.sleep(2)
+            merger = FinMergePreview(root_dir=root_dir)
+            merger()
         elif( choice == STEP7):
+            print("Find Relationship and move to NN folder")
+            pair_fin(root_dir)
+        elif( choice == STEP8):
             print("Check User Sorted Relationship folder")
         elif( choice == EXIT):
             print("Exiting now")
