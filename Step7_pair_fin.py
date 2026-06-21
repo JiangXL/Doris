@@ -4,14 +4,12 @@
 # 在制作 preview slide 时，匹配并移动 Fin
 # 根据 Fin 像素大小排序，选像素最高者
 
-import argparse
 import cv2
 import glob
 import numpy as np
 import os
 import shutil
 from pathlib import Path
-from matplotlib import pyplot as plt
 
 from wildlife_tools.data import FeatureDataset
 
@@ -60,7 +58,7 @@ def pair_fin(root_dir):
         os.path.join(root_dir, "METAINFO", "FIN_DEEPFEATURES_SELECTED_MERGED_PAIRED")
     )
 
-    # Link original image to subfolder
+    # Soft link original image to subfolder
     print("Linking orignal image to dolphin folder")
     DphID_list = features.metadata["DphID"].unique()
     for DphID in DphID_list:
@@ -68,16 +66,26 @@ def pair_fin(root_dir):
         if DphID != 0:
             dest_dir = os.path.join(root_dir, "DphID%03d" % DphID)
             create_empty_folder(dest_dir)
-        else:
-            dest_dir = os.path.join(root_dir, "Quality below 60")
-            if not Path(dest_dir).exists():
-                os.mkdir(dest_dir)
-        for dolphin in paths:
-            src = os.path.join(root_dir, dolphin)
-            dest = os.path.join(dest_dir, dolphin)
-            if not os.path.exists(dest):
-                os.symlink(src, dest)
-    
+            for dolphin in paths:
+                src = os.path.join(root_dir, dolphin)
+                dest = os.path.join(dest_dir, dolphin)
+                if not os.path.exists(dest):
+                    os.symlink(src, dest)
+    # Move unclassied original image to Quality below 60
+    unclassied_img_list = [
+        i
+        for i in features.metadata.orig_img.unique()
+        if i not in features.metadata.loc[features.metadata["DphID"] != 0, "orig_img"].unique()
+    ]
+    for img in unclassied_img_list:
+        src = os.path.join(root_dir, img)
+        dest_dir = os.path.join(root_dir, "Quality below 60")
+        dest = os.path.join(dest_dir, img)
+        if not Path(dest_dir).exists():
+            os.mkdir(dest_dir)
+        if not os.path.exists(dest):
+            os.symlink(src, dest)
+ 
     ## Find NN
     # Link all nearby dolphins to NN folder automatic
     print("Finding All Near Neighbours")
@@ -106,7 +114,7 @@ def pair_fin(root_dir):
                 os.mkdir(dest_dir)
             if not os.path.exists(dest):
                 os.symlink(src, dest)
-
+   
     # generate automatic NN ID
     features.metadata["automatic_group"] = ""
     dolphin_count_in_img = features.metadata.orig_img[
@@ -150,7 +158,8 @@ def pair_fin(root_dir):
         MCP_list.sort()
         MCP_idx = 1
         for MCP in MCP_list:
-            img_list = glob.glob(os.path.join(MCP_dir, MCP, "*.JPG"))
+            path = os.path.join(glob.escape(MCP_dir), MCP, "*.JPG")
+            img_list = glob.glob(path)
             MCP_name = "MCP%02d" % (MCP_idx)
             for img in img_list:
                 img_name = os.path.basename(img)
@@ -177,7 +186,8 @@ def pair_fin(root_dir):
         NN_list.sort()
         NN_idx = 1
         for NN in NN_list:
-            img_list = glob.glob(os.path.join(NN_dir, NN, "*.JPG"))
+            path = os.path.join(glob.escape(NN_dir), NN, "*.JPG")
+            img_list = glob.glob(path)
             NN_name = "NN%02d" % (NN_idx)
             for img in img_list:
                 img_name = os.path.basename(img)
@@ -204,7 +214,8 @@ def pair_fin(root_dir):
         SYN_list.sort()
         SYN_idx = 1
         for SYN in SYN_list:
-            img_list = glob.glob(os.path.join(SYN_dir, SYN, "*.JPG"))
+            path = os.path.join(glob.escape(SYN_dir), SYN, "*.JPG")
+            img_list = glob.glob(path)
             SYN_name = "SYN%02d" % (SYN_idx)
             for img in img_list:
                 img_name = os.path.basename(img)
@@ -224,31 +235,6 @@ def pair_fin(root_dir):
         )
     )
 
-    unclassied_img_list = []
-    orig_img_has_DphID_list = features.metadata.loc[
-        features.metadata["DphID"] != 0, "orig_img"
-    ].unique()
-    for i in features.metadata.orig_img.unique():
-        if i not in orig_img_has_DphID_list:
-            unclassied_img_list.append(i)
-
-    ret = features.metadata.loc[features.metadata["DphID"] != 0, "orig_img"].unique()
-
-    # Move unclassied original image to Quality below 60
-    unclassied_img_list = [
-        i
-        for i in features.metadata.orig_img.unique()
-        if i not in features.metadata.loc[features.metadata["DphID"] != 0, "orig_img"].unique()
-    ]
-    for img in unclassied_img_list:
-        src = os.path.join(root_dir, img)
-        dest_dir = os.path.join(root_dir, "Quality below 60")
-        dest = os.path.join(dest_dir, img)
-        if not Path(dest_dir).exists():
-            os.mkdir(dest_dir)
-        if not os.path.exists(dest):
-            os.symlink(src, dest)
-
     # Convert softlink to regular file
     # ```bash
     # for f in $(find MCP/ -type l);do cp --remove-destination $(readlink $f) $f;done;
@@ -256,6 +242,7 @@ def pair_fin(root_dir):
     return features
 
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser(
         description="Pair fin features and organize social relationship folders."
     )

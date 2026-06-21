@@ -4,13 +4,13 @@ import time
 import subprocess
 from util import select_folder
 
-from Step1_crop_fin import FinCropper
-from Step2_filter_low_quality import FinQualityFilter
 from Step3_extract_fin_feature import FinFeatureExtractor
 from Step4_sort_fin_automatic import FinFeatureSorter
 from Step5_sort_fin_by_hand import FinInteractiveLabeler
 from Step6_merge_preview import FinMergePreview
 from Step7_pair_fin import pair_fin
+from Step8_statistics import statistics
+from  Step9_apply_change import convert_symlinks
 
 def TUI(root_dir):
     choice = "0"
@@ -33,7 +33,9 @@ def TUI(root_dir):
                        " [ 4]: Auto Cluster High Similar FIN\n" +
                        " [ 5]: Select Image same with reference\n" + 
                        " [ 6]: Merge Preview\n" + 
-                       " [ 7]: Pair Fin and Find Social Relationship Group \n" + 
+                       " [ 7]: Pair Fin and Find Behavior Group\n" + 
+                       " [ 8]: Plot Group Matching Review\n" + 
+                       " [ 9]: Convert all soft link to regular file\n" +
                        " [-1]: Exit\n" +
                        "Type Step Number: ")
         if choice == "0":
@@ -41,10 +43,12 @@ def TUI(root_dir):
             print("Working root diretory is ", root_dir)
         elif choice == STEP1:
             print("Locate and Crop Fin") 
+            from Step1_crop_fin import FinCropper
             cropper = FinCroppper()
             meta_df = cropper.crop(root_dir)
         elif( choice == STEP2 ):
             print("Filter out low quality and low confidence fin")
+            from Step2_filter_low_quality import FinQualityFilter
             filter_obj = FinQualityFilter(root_dir=root_dir)
             filter_obj.auto_filter()
             ret = "N" # TODO: move choice inside filter module
@@ -77,7 +81,11 @@ def TUI(root_dir):
             print("Find Relationship and move to NN folder")
             pair_fin(root_dir)
         elif( choice == STEP8):
-            print("Check User Sorted Relationship folder")
+            print("Review Group Matching")
+            statistics(root_dir)
+        elif( choice == STEP9):
+            print("Convert all soft link to regular file")
+            convert_symlinks(root_dir)
         elif( choice == EXIT):
             print("Exiting now")
             break

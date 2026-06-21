@@ -40,7 +40,8 @@ class FinCropper:
             jpg_path: 原始 JPG 图像路径
             output_dir: 背鳍剪裁图保存目录（FIN 子目录会在此创建）
         Returns:
-            list[dict]: 该图像检测到的所有背鳍元数据列表
+            tuple(list[dict], dict|None): 该图像检测到的所有背鳍元数据列表，
+                以及未检测到背鳍时的图像信息（检测到则返回 None）
         """
         ori_img_name = os.path.basename(jpg_path)
         focusposition2 = read_exif_FocusPosition2(jpg_path)
@@ -50,6 +51,18 @@ class FinCropper:
         fin_save_dir = os.path.join(output_dir, "FIN")
         os.makedirs(fin_save_dir, exist_ok=True)
 
+        # 使用 PIL 获取原始图像尺寸（作为无背鳍时的兜底信息）
+        with Image.open(jpg_path) as img:
+            orig_img_w, orig_img_h = img.size
+
+        no_fin_info = {
+            "orig_img": ori_img_name,
+            "orig_img_h": orig_img_h,
+            "orig_img_w": orig_img_w,
+            "focusposition2": focusposition2,
+            "jpg_path": jpg_path,
+        }
+
         for result in results:
             boxes = result.boxes
             if boxes is None or len(boxes) == 0:
@@ -57,6 +70,8 @@ class FinCropper:
 
             keep_indices = filter_duplicate_detections(boxes, self.iou_threshold)
             orig_img_h, orig_img_w = boxes.orig_shape
+            no_fin_info["orig_img_h"] = orig_img_h
+            no_fin_info["orig_img_w"] = orig_img_w
 
             for new_idx, fin_idx in enumerate(keep_indices):
                 xyxy = boxes[fin_idx].xyxy
@@ -85,23 +100,21 @@ class FinCropper:
                         "clearness": clearness,
                         "focusposition2": focusposition2,
                     }
-                )
-        return rows
+        if not rows:
+            return rows, no_fin_info
+        return rows, None
 
     def crop(
             self,
             root_dir: str,
             output_dir: str = None,
             save_meta: bool = True,
-            save_plot: bool = True,
         ) -> pd.DataFrame:
         """批量检测并剪裁背鳍。
         Args:
             root_dir: 存放原始 *.JPG 的目录（可带末尾斜杠）
             output_dir: 结果输出目录，默认与 root_dir 相同
             save_meta: 是否保存 METAINFO/FIN_METAINFO.csv
-            save_plot: 是否保存置信度分布图 METAINFO/FinCropConfidence.png
-
         Returns:
             pd.DataFrame: 包含所有背鳍元数据的 DataFrame
         """
@@ -121,23 +134,19 @@ class FinCropper:
 
         meta_info = pd.DataFrame(
             columns=[
-                "identity",
-                "path",
-                "crop_conf",
-                "x_min",
-                "x_max",
-                "y_min",
-                "y_max",
-                "orig_img",
-                "orig_img_h",
-                "orig_img_w",
-                "clearness",
+                "identity", "path", "crop_conf", "x_min",
+                "x_max", "y_min", "y_max", "orig_img",
+                "orig_img_h", "orig_img_w", "clearness",
                 "focusposition2",
             ]
         )
 
+        no_fin_info_list = []
+
         for jpg_path in tqdm(jpg_paths, desc="Cropping fins"):
-            rows = self._detect_and_crop(jpg_path, output_dir)
+            rows, no_fin_info = self._detect_and_crop(jpg_path, output_dir)
+            if no_fin_info is not None:
+                no_fin_info_list.append(no_fin_info)
             # append new found fin metainfo to final row of table
             for row in rows:
                 meta_info.loc[len(meta_info)] = row
@@ -153,28 +162,42 @@ class FinCropper:
             meta_info.to_csv(meta_path, index=False)
             print(f"元数据已保存: {meta_path}")
 
-        # 保存可视化
-        if save_plot:
-            meta_dir = os.path.join(output_dir, "METAINFO")
-            os.makedirs(meta_dir, exist_ok=True)
-            plt.figure(figsize=(8, 6))
-            plt.subplot(2, 1, 1)
-            plt.title(f"Fin Crop Confidence-{dataset_name}")
-            plt.plot(meta_info["crop_conf"], "*")
-            plt.subplot(2, 1, 2)
-            plt.hist(meta_info["crop_conf"], bins=256)
-            plot_path = os.path.join(meta_dir, "FinCropConfidence.png")
-            plt.tight_layout()
-            plt.savefig(plot_path)
-            plt.close()
-            print(f"分布图已保存: {plot_path}")
+            # 保存未检测到背鳍的图像信息
+            if no_fin_info_list:
+                no_fin_df = pd.DataFrame(no_fin_info_list)
+                no_fin_path = os.path.join(meta_dir, "METAINFO_IMAGE_NO_FIN.csv")
+                no_fin_df.to_csv(no_fin_path, index=False)
+                print(f"未检测到背鳍的图像元数据已保存: {no_fin_path}")
 
+        # 保存可视化
+        meta_dir = os.path.join(output_dir, "METAINFO")
+        os.makedirs(meta_dir, exist_ok=True)
+        plt.figure(figsize=(8, 6))
+        plt.subplot(2, 1, 1)
+        plt.title(f"Fin Crop Confidence-{dataset_name}")
+        if not meta_info.empty:
+            plt.plot(meta_info["crop_conf"], "*")
+        else:
+            plt.text(0.5, 0.5, "No fin detected", ha="center", va="center")
+            plt.xticks([])
+            plt.yticks([])
+        plt.subplot(2, 1, 2)
+        if not meta_info.empty:
+            plt.hist(meta_info["crop_conf"], bins=256)
+        else:
+            plt.text(0.5, 0.5, "No fin detected", ha="center", va="center")
+            plt.xticks([])
+            plt.yticks([])
+        plot_path = os.path.join(meta_dir, "FinCropConfidence.png")
+        plt.tight_layout()
+        plt.savefig(plot_path)
+        plt.close()
+        print(f"分布图已保存: {plot_path}")
         print(f"Total fin number: {len(meta_info)}")
         return meta_info
 
     def preview(self, image_path: str):
         """对单张图像进行背鳍检测并返回标注后的 PIL Image（用于快速预览）。
-
         Args:
             image_path: 图像文件路径
 
