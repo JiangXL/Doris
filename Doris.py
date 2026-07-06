@@ -4,7 +4,6 @@ import time
 import subprocess
 from util import select_folder
 
-from Step3_extract_fin_feature import FinFeatureExtractor
 from Step4_sort_fin_automatic import FinFeatureSorter
 from Step5_sort_fin_by_hand import FinInteractiveLabeler
 from Step6_merge_preview import FinMergePreview
@@ -23,6 +22,7 @@ def TUI(root_dir):
     STEP6 = "6"
     STEP7 = "7"
     STEP8 = "8"
+    STEP9 = "9"
     while( True ):
         choice = input("------Dolphin Reidentify Script Toolkit-------------\n" +
                        "ROOT_DIR: %s\n"%(root_dir) +
@@ -44,7 +44,7 @@ def TUI(root_dir):
         elif choice == STEP1:
             print("Locate and Crop Fin") 
             from Step1_crop_fin import FinCropper
-            cropper = FinCroppper()
+            cropper = FinCropper()
             meta_df = cropper.crop(root_dir)
         elif( choice == STEP2 ):
             print("Filter out low quality and low confidence fin")
@@ -58,6 +58,7 @@ def TUI(root_dir):
                 if ret == "Y":
                     filter_obj.confirm_filter()
         elif( choice == STEP3 ):
+            from Step3_extract_fin_feature import FinFeatureExtractor
             extractor = FinFeatureExtractor()
             extractor.extract(root_dir)
             print("Compute the fin fingerprint DONE")
@@ -69,7 +70,7 @@ def TUI(root_dir):
             print("Manual cofirm the same fin in similar fin image")
             subprocess.Popen(['python3', f'{os.getcwd()}/ImageGridViewer.py'])
             time.sleep(2)
-            labeler = FinInteractiveLabeler(root_dir=root_dir)
+            labeler = FinInteractiveLabeler(root_dir=root_dir, threshold=0.5)
             labeler.run()
         elif( choice == STEP6):
             print("Merge Preview")

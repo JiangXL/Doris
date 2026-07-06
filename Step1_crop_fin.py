@@ -20,8 +20,8 @@ class FinCropper:
     """背鳍检测与剪裁器"""
     def __init__(
         self,
-        #yolo_model_path: str = "models/fin_yolo_best.pt",
-        yolo_model_path: str = "models/fin_yolo_best.onnx",
+        yolo_model_path: str = "models/fin_yolo_best.pt",
+        #yolo_model_path: str = "models/fin_yolo_best.onnx",
         blur_model_path: str = "models/blur_detection_resnet101_final.pth",
         iou_threshold: float = 0.6):
         """
@@ -31,7 +31,7 @@ class FinCropper:
             iou_threshold: 去重 IOU 阈值
         """
         self.iou_threshold = iou_threshold
-        self.fin_detector = YOLO(yolo_model_path)
+        self.fin_detector = YOLO(yolo_model_path, task='detect')
         self.blur_detector = BlurDetector(blur_model_path)
 
     def _detect_and_crop(self, jpg_path: str, output_dir: str):
@@ -100,6 +100,7 @@ class FinCropper:
                         "clearness": clearness,
                         "focusposition2": focusposition2,
                     }
+                )
         if not rows:
             return rows, no_fin_info
         return rows, None

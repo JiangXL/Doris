@@ -10,8 +10,6 @@ from wildlife_tools.similarity import CosineSimilarity
 from wildlife_tools.data import ImageDataset
 from wildlife_tools.data import FeatureDataset
 
-#TODO: Read the focus position from exif 
-
 class FinFeatureSorter:
     """Automatically sort/cluster fin features based on cosine similarity."""
 
@@ -140,7 +138,6 @@ class FinFeatureSorter:
         self.fin_id_list = np.zeros(len(self.features), dtype=np.int32)
         for i in range(len(self.similarity)):
             self.fin_id_list = self.automatic_link_fin(i)
-
         print("Unclassified /Total fin image:", 
             "%d/%d."%(np.sum(self.fin_id_list == 0), len(self.features)))
         print("Unique FinID number:", len(np.unique(self.fin_id_list)) - 1)

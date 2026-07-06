@@ -13,3 +13,8 @@ only cofirm fin number larger than 5?
 只能确保找到的是有的，但不能排除没找的
 
 先有有编程经验的志愿者测试
+
+加速 YOLO
+1. batch
+2. JIT
+3. TRT
