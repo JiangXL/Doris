@@ -31,46 +31,7 @@ class FinQualityFilter:
         )
         # Save the updated metainfo DataFrame to CSV
         self.metainfo.to_csv(self.metainfo_csv)
-
-    def plot_statistics_result(self):
-        """Plot and save the filter statistics result."""
-        total_fin_num = len(self.metainfo)
-        selected_clearness_num = int(np.sum(self.metainfo.clearness > self.clearness_threshold))
-        selected_crop_conf_num = int(np.sum(self.metainfo.crop_conf > self.crop_conf_threshold))
-
-        clearness_annotation = "Clearness > %0.3f \n %d/%d" % (
-            self.clearness_threshold,
-            selected_clearness_num,
-            total_fin_num,
-        )
-        crop_conf_annotation = "Crop confidence > %0.3f \n %d/%d" % (
-            self.crop_conf_threshold,
-            selected_crop_conf_num,
-            total_fin_num,
-        )
-        final_selected_num = int(np.sum(self.metainfo.select))
-        final_selected_annotation = "Final selected: %d/%d" % (
-            final_selected_num,
-            total_fin_num,
-        )
-
-        plt.subplot(211)
-        plt.hist(self.metainfo.clearness, bins=128)
-        plt.xlabel("Fin Image Clearness")
-        plt.ylabel("Fin Image Number")
-        plt.plot([self.clearness_threshold, self.clearness_threshold], [500, 0])
-        plt.annotate(clearness_annotation, [self.clearness_threshold, 250])
-        plt.subplot(212)
-        plt.hist(self.metainfo.crop_conf, bins=128)
-        plt.xlabel("Fin Crop Confidence")
-        plt.xlim(0, 1)
-        plt.annotate(crop_conf_annotation, [0.5, 100])
-        plt.annotate(final_selected_annotation, [0.1, 50])
-        plt.plot([self.crop_conf_threshold, self.crop_conf_threshold], [150, 0])
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.root_dir, "METAINFO", "FIN_Filter.png"))
-        #plt.show()
-
+ 
     @staticmethod
     def create_empty_folder(folder):
         """Create an empty folder, removing existing contents if necessary."""
@@ -141,6 +102,45 @@ class FinQualityFilter:
             if not os.path.exists(dest):
                 os.symlink(src, dest)
 
+def plot_statistics_result(self):
+        """Plot and save the filter statistics result."""
+        total_fin_num = len(self.metainfo)
+        selected_clearness_num = int(np.sum(self.metainfo.clearness > self.clearness_threshold))
+        selected_crop_conf_num = int(np.sum(self.metainfo.crop_conf > self.crop_conf_threshold))
+
+        clearness_annotation = "Clearness > %0.3f \n %d/%d" % (
+            self.clearness_threshold,
+            selected_clearness_num,
+            total_fin_num,
+        )
+        crop_conf_annotation = "Crop confidence > %0.3f \n %d/%d" % (
+            self.crop_conf_threshold,
+            selected_crop_conf_num,
+            total_fin_num,
+        )
+        final_selected_num = int(np.sum(self.metainfo.select))
+        final_selected_annotation = "Final selected: %d/%d" % (
+            final_selected_num,
+            total_fin_num,
+        )
+
+        plt.subplot(211)
+        plt.hist(self.metainfo.clearness, bins=128)
+        plt.xlabel("Fin Image Clearness")
+        plt.ylabel("Fin Image Number")
+        plt.plot([self.clearness_threshold, self.clearness_threshold], [500, 0])
+        plt.annotate(clearness_annotation, [self.clearness_threshold, 250])
+        plt.subplot(212)
+        plt.hist(self.metainfo.crop_conf, bins=128)
+        plt.xlabel("Fin Crop Confidence")
+        plt.xlim(0, 1)
+        plt.annotate(crop_conf_annotation, [0.5, 100])
+        plt.annotate(final_selected_annotation, [0.1, 50])
+        plt.plot([self.crop_conf_threshold, self.crop_conf_threshold], [150, 0])
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.root_dir, "METAINFO", "FIN_Filter.png"))
+        #plt.show()
+
     def auto_filter(self):
         """Execute the full filtering pipeline."""
         self.load_metainfo()
@@ -150,6 +150,7 @@ class FinQualityFilter:
 
     def confirm_filter(self):
         self.scan_user_confirmation()
+        #TODO: plot distribution after selection
         self.link_low_quality_originals()
 
 if __name__ == "__main__":

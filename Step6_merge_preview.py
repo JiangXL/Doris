@@ -133,11 +133,25 @@ class FinMergePreview:
                     preview_fin.iloc[[found_i_with_max_similarity, cur_i + 1]].values
                 )
 
-    def start_client(self):
-        """Start the multiprocessing pipe client"""
-        self.receiver = multiprocessing.connection.Client(
-            (self.host, self.port), authkey=self.authkey
-        )
+    def start_client(self, timeout=30):
+        """Start the multiprocessing pipe client, retrying until ready."""
+        import time
+        deadline = time.time() + timeout
+        last_exc = None
+        while time.time() < deadline:
+            try:
+                self.receiver = multiprocessing.connection.Client(
+                    (self.host, self.port), authkey=self.authkey
+                )
+                return
+            except ConnectionRefusedError as exc:
+                last_exc = exc
+                time.sleep(0.5)
+        raise RuntimeError(
+            "Could not connect to ImageGridViewer GUI at %s:%d within %ds. "
+            "Please start it first with: python ImageGridViewer.py"
+            % (self.host, self.port, timeout)
+        ) from last_exc
 
     def merge_loop(self):
         """

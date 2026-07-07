@@ -25,15 +25,22 @@ def select_folder(title="Select Folder") -> str | None:
     return None
 
 
-def read_exif_FocusPosition2(image_path):
-    # Return FocusPosition if exist, or -1
-    FocusPosition2 = -1
+def read_exif(image_path):
+    # Return info from sony exif metadata assume they exit
+    exif = {
+        "FocusPosition2":-1,
+        "DateTime":"",
+        "AmbientTemperature":-1,
+        "PixelXDimension":-1,
+        "PixelYDimension":-1,
+    }
     with pyexiv2.Image(image_path) as img:
         metadata = img.read_exif()
     
         # Sony FocusPosition is usually in the Makernote tag or FocusInfo 
-        focus_tag_key = 'Exif.Sony2Fp.FocusPosition2' 
-    
-        if focus_tag_key in metadata:
-            FocusPosition2 = int(metadata[focus_tag_key])
-    return FocusPosition2
+        exif["FocusPosition2"] = int(metadata["Exif.Sony2Fp.FocusPosition2"])
+        exif["PixelXDimension"]= int(metadata["Exif.Photo.PixelXDimension"])
+        exif["PixelYDimension"]= int(metadata["Exif.Photo.PixelYDimension"])
+        exif["AmbientTemperature"] = int(metadata["Exif.Sony2Fp.AmbientTemperature"])
+        exif["DateTime"] = metadata["Exif.Image.DateTime"]
+    return exif

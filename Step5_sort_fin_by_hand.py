@@ -24,7 +24,7 @@ class FinInteractiveLabeler:
     DEFAULT_HOST = 'localhost'
     DEFAULT_PORT = 1126
     DEFAULT_AUTHKEY = b'dolphin'
-    DEFAULT_THRESHOLD = 0.65
+    DEFAULT_THRESHOLD = 0.5
     def __init__(
         self,
         root_dir,
@@ -58,11 +58,25 @@ class FinInteractiveLabeler:
         self.similarity = np.load(self.similarity_path)
         self.fin_id_list = self.features.metadata.FinID.values.copy()
 
-    def start_client(self):
-        """Start the multiprocessing pipe client and accept one connection."""
-        self.client= multiprocessing.connection.Client(
-            (self.host, self.port), authkey=self.authkey
-        )
+    def start_client(self, timeout=30):
+        """Start the multiprocessing pipe client, retrying until ready."""
+        import time
+        deadline = time.time() + timeout
+        last_exc = None
+        while time.time() < deadline:
+            try:
+                self.client = multiprocessing.connection.Client(
+                    (self.host, self.port), authkey=self.authkey
+                )
+                return
+            except ConnectionRefusedError as exc:
+                last_exc = exc
+                time.sleep(0.5)
+        raise RuntimeError(
+            "Could not connect to ImageGridViewer GUI at %s:%d within %ds. "
+            "Please start it first with: python ImageGridViewer.py"
+            % (self.host, self.port, timeout)
+        ) from last_exc
 
     @staticmethod
     def stats_fin_id(_fin_id_list):
@@ -180,6 +194,7 @@ class FinInteractiveLabeler:
             "path": wait_user_check_fin_path_list,
             "annotation": wait_user_check_fin_annotation_list,
         })
+        #TODO: add shoot group to annotation
 
         # Receive result from GUI
         user_confirmed_fin_list = client.recv()

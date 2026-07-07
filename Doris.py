@@ -11,6 +11,7 @@ from Step7_pair_fin import pair_fin
 from Step8_statistics import statistics
 from  Step9_apply_change import convert_symlinks
 
+
 def TUI(root_dir):
     choice = "0"
     EXIT = "-1"
@@ -68,16 +69,32 @@ def TUI(root_dir):
             sorter.run()
         elif( choice == STEP5):
             print("Manual cofirm the same fin in similar fin image")
-            subprocess.Popen(['python3', f'{os.getcwd()}/ImageGridViewer.py'])
-            time.sleep(2)
+            viewer_script = os.path.join(os.getcwd(), 'ImageGridViewer.py')
+            viewer_proc = subprocess.Popen([sys.executable, viewer_script])
+            time.sleep(1)
             labeler = FinInteractiveLabeler(root_dir=root_dir, threshold=0.5)
-            labeler.run()
+            try:
+                labeler.run()
+            finally:
+                viewer_proc.terminate()
+                try:
+                    viewer_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    viewer_proc.kill()
         elif( choice == STEP6):
             print("Merge Preview")
-            subprocess.Popen(['python3', f'{os.getcwd()}/ImageGridViewer.py'])
-            time.sleep(2)
+            viewer_script = os.path.join(os.getcwd(), 'ImageGridViewer.py')
+            viewer_proc = subprocess.Popen([sys.executable, viewer_script])
+            time.sleep(1)
             merger = FinMergePreview(root_dir=root_dir)
-            merger()
+            try:
+                merger()
+            finally:
+                viewer_proc.terminate()
+                try:
+                    viewer_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    viewer_proc.kill()
         elif( choice == STEP7):
             print("Find Relationship and move to NN folder")
             pair_fin(root_dir)

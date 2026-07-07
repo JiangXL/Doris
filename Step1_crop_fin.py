@@ -12,7 +12,7 @@ from PIL import Image
 from ultralytics import YOLO
 from matplotlib import pyplot as plt
 
-from util import read_exif_FocusPosition2, select_folder
+from util import read_exif, select_folder
 from blur_detector_torch import BlurDetector
 from check_duplicate_detections import filter_duplicate_detections
 
@@ -20,7 +20,8 @@ class FinCropper:
     """背鳍检测与剪裁器"""
     def __init__(
         self,
-        yolo_model_path: str = "models/fin_yolo_best.pt",
+        yolo_model_path: str = "models/fin_yolo_3class_best.pt",
+        #yolo_model_path: str = "models/fin_yolo_best.pt",
         #yolo_model_path: str = "models/fin_yolo_best.onnx",
         blur_model_path: str = "models/blur_detection_resnet101_final.pth",
         iou_threshold: float = 0.6):
@@ -44,49 +45,46 @@ class FinCropper:
                 以及未检测到背鳍时的图像信息（检测到则返回 None）
         """
         ori_img_name = os.path.basename(jpg_path)
-        focusposition2 = read_exif_FocusPosition2(jpg_path)
-        results = self.fin_detector(jpg_path, verbose=False)
-
-        rows = []
         fin_save_dir = os.path.join(output_dir, "FIN")
         os.makedirs(fin_save_dir, exist_ok=True)
 
-        # 使用 PIL 获取原始图像尺寸（作为无背鳍时的兜底信息）
-        with Image.open(jpg_path) as img:
-            orig_img_w, orig_img_h = img.size
+        exif = read_exif(jpg_path)
+        fin_rows = []
 
-        no_fin_info = {
-            "orig_img": ori_img_name,
-            "orig_img_h": orig_img_h,
-            "orig_img_w": orig_img_w,
-            "focusposition2": focusposition2,
-            "jpg_path": jpg_path,
-        }
+        img_row = {
+                "orig_img": ori_img_name,
+                "orig_img_w": exif["PixelXDimension"],
+                "orig_img_h": exif["PixelYDimension"],
+                "focusposition2": exif["FocusPosition2"],
+                "temperature": exif["AmbientTemperature"],
+                "datetime": exif["DateTime"],
+                "no_fin": 1
+            }
 
+        # detect fin from orignal image
+        results = self.fin_detector(jpg_path, verbose=False)
         for result in results:
             boxes = result.boxes
+            # if no fin was found, pass it
             if boxes is None or len(boxes) == 0:
                 continue
-
+            # check and remove dulicated fin(s)
             keep_indices = filter_duplicate_detections(boxes, self.iou_threshold)
-            orig_img_h, orig_img_w = boxes.orig_shape
-            no_fin_info["orig_img_h"] = orig_img_h
-            no_fin_info["orig_img_w"] = orig_img_w
-
+            img_rows["no_fin"] = 0
+            # check each found fin
             for new_idx, fin_idx in enumerate(keep_indices):
                 xyxy = boxes[fin_idx].xyxy
                 x0, y0, x1, y1 = [int(i) for i in xyxy[0]]
                 conf = float(boxes[fin_idx].conf)
-
+                fin_class_name = result.names[int(boxes[fin_idx].cls)]
                 cropped_img = result.orig_img[y0:y1, x0:x1, :]
-                img_name = f"{ori_img_name[:-4]}_FIN{new_idx:02d}.JPG"
+                img_name = f"{ori_img_name[:-4]}_FIN{new_idx:02d}_{fin_class_name}.JPG"
                 fin_img_path = os.path.join("FIN", img_name)
                 cv2.imwrite(os.path.join(fin_save_dir, img_name), cropped_img)
 
                 blur_ret = self.blur_detector.predict(cropped_img)
                 clearness = blur_ret['probabilities']['clear']
-
-                rows.append(
+                fin_rows.append(
                     {
                         "path": fin_img_path,
                         "crop_conf": conf,
@@ -95,21 +93,23 @@ class FinCropper:
                         "y_min": y0,
                         "y_max": y1,
                         "orig_img": ori_img_name,
-                        "orig_img_h": orig_img_h,
-                        "orig_img_w": orig_img_w,
+                        "orig_img_w": exif["PixelXDimension"],
+                        "orig_img_h": exif["PixelYDimension"],
                         "clearness": clearness,
-                        "focusposition2": focusposition2,
+                        "focusposition2": exif["FocusPosition2"],
+                        "temperature": exif["AmbientTemperature"],
+                        "datetime": exif["DateTime"]
                     }
                 )
-        if not rows:
-            return rows, no_fin_info
-        return rows, None
+        if not fin_rows:
+            return fin_rows, img_row
+        else:
+            return None, img_row
 
     def crop(
             self,
             root_dir: str,
-            output_dir: str = None,
-            save_meta: bool = True,
+            output_dir: str = None
         ) -> pd.DataFrame:
         """批量检测并剪裁背鳍。
         Args:
@@ -119,6 +119,7 @@ class FinCropper:
         Returns:
             pd.DataFrame: 包含所有背鳍元数据的 DataFrame
         """
+        # set root_dir
         root_dir = root_dir.rstrip(os.sep)
         if output_dir is None:
             output_dir = root_dir
@@ -126,56 +127,54 @@ class FinCropper:
         else:
             output_dir = output_dir.rstrip(os.sep)
         dataset_name = os.path.basename(root_dir)
+
+        # search all jpg files
         jpg_paths = sorted(glob.glob(
             os.path.join(glob.escape(root_dir), "*.JPG")))
-
         if not jpg_paths:
             print(f"警告: 在 {root_dir} 中未找到 *.JPG 文件")
             return pd.DataFrame()
-
+        # initilize DataFrame
         meta_info = pd.DataFrame(
             columns=[
-                "identity", "path", "crop_conf", "x_min",
-                "x_max", "y_min", "y_max", "orig_img",
-                "orig_img_h", "orig_img_w", "clearness",
-                "focusposition2",
+                "identity",   "path",       "crop_conf", "x_min",
+                "x_max",      "y_min",      "y_max",     "orig_img",
+                "orig_img_w", "orig_img_h", "clearness", "focusposition2",
+                "temperature", "datetime"
             ]
         )
 
-        no_fin_info_list = []
+        img_info_list = []
 
-        for jpg_path in tqdm(jpg_paths, desc="Cropping fins"):
-            rows, no_fin_info = self._detect_and_crop(jpg_path, output_dir)
-            if no_fin_info is not None:
-                no_fin_info_list.append(no_fin_info)
-            # append new found fin metainfo to final row of table
-            for row in rows:
-                meta_info.loc[len(meta_info)] = row
-
+        for jpg_path in tqdm(jpg_paths, desc="Cropping fin image"):
+            fin_rows, img_row = self._detect_and_crop(jpg_path, output_dir)
+            if fin_rows is not None:
+                # append new found fin metainfo to final row of table
+                for row in rows:
+                    meta_info.loc[len(meta_info)] = row
+            img_info_list.append(img_row)
         # 生成唯一编号
         meta_info["identity"] = range(len(meta_info))
 
         # 保存元数据
-        if save_meta:
-            meta_dir = os.path.join(output_dir, "METAINFO")
-            os.makedirs(meta_dir, exist_ok=True)
-            meta_path = os.path.join(meta_dir, "FIN_METAINFO.csv")
-            meta_info.to_csv(meta_path, index=False)
-            print(f"元数据已保存: {meta_path}")
-
-            # 保存未检测到背鳍的图像信息
-            if no_fin_info_list:
-                no_fin_df = pd.DataFrame(no_fin_info_list)
-                no_fin_path = os.path.join(meta_dir, "METAINFO_IMAGE_NO_FIN.csv")
-                no_fin_df.to_csv(no_fin_path, index=False)
-                print(f"未检测到背鳍的图像元数据已保存: {no_fin_path}")
-
-        # 保存可视化
         meta_dir = os.path.join(output_dir, "METAINFO")
         os.makedirs(meta_dir, exist_ok=True)
+        meta_path = os.path.join(meta_dir, "FIN_METAINFO.csv")
+        meta_info.to_csv(meta_path, index=False)
+        print(f"元数据已保存: {meta_path}")
+
+        # 保存未检测到背鳍的图像信息
+        if no_fin_info_list:
+            no_fin_df = pd.DataFrame(no_fin_info_list)
+            no_fin_path = os.path.join(meta_dir, "IMAGE_METAINFO.csv")
+            no_fin_df.to_csv(no_fin_path, index=False)
+            print(f"未检测到背鳍的图像元数据已保存: {no_fin_path}")
+
+        # 保存可视化
         plt.figure(figsize=(8, 6))
         plt.subplot(2, 1, 1)
         plt.title(f"Fin Crop Confidence-{dataset_name}")
+        # scatter 
         if not meta_info.empty:
             plt.plot(meta_info["crop_conf"], "*")
         else:
@@ -183,18 +182,18 @@ class FinCropper:
             plt.xticks([])
             plt.yticks([])
         plt.subplot(2, 1, 2)
+        # histogram
         if not meta_info.empty:
             plt.hist(meta_info["crop_conf"], bins=256)
         else:
             plt.text(0.5, 0.5, "No fin detected", ha="center", va="center")
             plt.xticks([])
             plt.yticks([])
-        plot_path = os.path.join(meta_dir, "FinCropConfidence.png")
         plt.tight_layout()
+        plot_path = os.path.join(meta_dir, "FinCropConfidence.png")
         plt.savefig(plot_path)
         plt.close()
-        print(f"分布图已保存: {plot_path}")
-        print(f"Total fin number: {len(meta_info)}")
+        print(f"Total detected fin number: {len(meta_info)}")
         return meta_info
 
     def preview(self, image_path: str):
@@ -209,9 +208,7 @@ class FinCropper:
         annotated = result.plot()
         return Image.fromarray(annotated[..., ::-1])  # BGR -> RGB
 
-# ============================================
-# 直接运行示例
-# ============================================
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) == 2:

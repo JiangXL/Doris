@@ -7,13 +7,12 @@ from matplotlib import pyplot as plt
 
 from wildlife_tools.features import DeepFeatures
 from wildlife_tools.similarity import CosineSimilarity
-from wildlife_tools.data import ImageDataset
 from wildlife_tools.data import FeatureDataset
 
 class FinFeatureSorter:
     """Automatically sort/cluster fin features based on cosine similarity."""
 
-    DEFAULT_THRESHOLD = 0.80
+    DEFAULT_THRESHOLD = 0.85
     DEFAULT_SIMILARITY_MATCH = 1.0
     DEFAULT_SIMILARITY_EXCLUDE = 0.0
 
@@ -25,7 +24,6 @@ class FinFeatureSorter:
         output_csv='METAINFO/FIN_METAINFO_SELECTED.csv',
         similarity_npy='METAINFO/FIN_SIMILARITY.npy',
         threshold=DEFAULT_THRESHOLD,
-        device='cuda',
     ):
         """
         Args:
@@ -35,7 +33,6 @@ class FinFeatureSorter:
             output_csv: Relative path for the output selected metadata CSV.
             similarity_npy: Relative path for the output similarity matrix.
             threshold: Cosine similarity threshold for clustering.
-            device: Device for similarity computation.
         """
         self.root_dir = root_dir
         self.metainfo_csv = os.path.join(root_dir, metainfo_csv)
@@ -43,7 +40,6 @@ class FinFeatureSorter:
         self.output_csv = os.path.join(root_dir, output_csv)
         self.similarity_npy = os.path.join(root_dir, similarity_npy)
         self.threshold = threshold
-        self.device = device
 
         self.full_metainfo = None
         self.features = None
@@ -81,74 +77,66 @@ class FinFeatureSorter:
             stats_text = stats_text + "fin %d: %d\n" % (i, fin_stats[i])
         print(stats_text)
 
-    def automatic_link_fin(self, index, fin_id_list=None, threshold=None):
+    def automatic_link_fin_distance(self):
+        #TODO: even lower than threshold, but in the focus position and image position
+        print("link based on distance: focusposition2, pixel distance")
+
+    def automatic_link_fin(self, index):
         """
         Link a feature at `index` to similar features based on cosine similarity.
-
+        update current fin ID assignments (modified in-place).
         Args:
             index: Feature index to process.
-            fin_id_list: Current fin ID assignments (modified in-place).
-            threshold: Similarity threshold.
-
-        Returns:
-            Updated fin_id_list.
         """
-        if fin_id_list is None:
-            fin_id_list = self.fin_id_list
-        if threshold is None:
-            threshold = self.threshold
 
         high_similar_fin_list = []
-        similarity = self.similarity
-
-        for i in range(0, len(similarity)):
-            if similarity[index, i] > threshold:
+        
+        # compare similarity between current index and others
+        for i in range(0, len(self.similarity)):
+            if self.similarity[index, i] > self.threshold:
                 high_similar_fin_list.append(i)
-        if len(high_similar_fin_list) == 1:
-            return fin_id_list
+        if len(high_similar_fin_list) == 1:  # if only itself
+            if self.fin_id_list[ high_similar_fin_list[0]] != 0:
+                # if this fin already has fin_id, do nothing
+                return 
 
-        existed_id = []
+        # find all assigned id in high_similar_fin_list
+        assigned_id = []
         for i in high_similar_fin_list:
-            fin_id = fin_id_list[i]
+            fin_id = self.fin_id_list[i]
             if not (fin_id == 0):
-                if not (fin_id in existed_id):
-                    existed_id.append(fin_id)
+                if not (fin_id in assigned_id):
+                    assigned_id.append(fin_id)
 
         # label fin
-        if len(existed_id) == 0:
-            prev_fin_id = np.max(fin_id_list)
+        if len(assigned_id) == 0: # all the fin image haven't fin id
+            prev_fin_id = np.max(self.fin_id_list)
             for i in range(1, prev_fin_id + 2):
-                if not (i in fin_id_list):
+                if not (i in self.fin_id_list):
+                    # find the fin id without being assigned
                     cur_fin_id = i
                     break
-        elif len(existed_id) == 1:
-            cur_fin_id = existed_id[0]
-        else:
-            # replace old id
-            cur_fin_id = np.min(existed_id)
-            existed_id.remove(cur_fin_id)
-            for fin_id in existed_id:
-                fin_id_list[fin_id_list == fin_id] = cur_fin_id
+        elif len(assigned_id) == 1: # only one unique fin id was recorded
+            cur_fin_id = assigned_id[0]
+        else: # more than one unique fin id was recorded, renew with minial id
+            cur_fin_id = np.min(assigned_id)
+            # replace old fin id even fin image don't show on high_similar_fin_list
+            assigned_id.remove(cur_fin_id)
+            for fin_id in assigned_id:
+                self.fin_id_list[self.fin_id_list == fin_id] = cur_fin_id
         for i in high_similar_fin_list:
-            fin_id_list[i] = cur_fin_id
-        return fin_id_list
+            # assign fin id to new found high similar fin with/without fin id
+            self.fin_id_list[i] = cur_fin_id 
 
     def cluster(self):
         """Run automatic clustering over all features."""
         self.fin_id_list = np.zeros(len(self.features), dtype=np.int32)
         for i in range(len(self.similarity)):
-            self.fin_id_list = self.automatic_link_fin(i)
+            self.automatic_link_fin(i)
         print("Unclassified /Total fin image:", 
             "%d/%d."%(np.sum(self.fin_id_list == 0), len(self.features)))
         print("Unique FinID number:", len(np.unique(self.fin_id_list)) - 1)
-
-    def save_results(self):
-        """Save FinID back to features and export metadata CSV."""
-        self.features.metadata["FinID"] = self.fin_id_list
-        self.features.save(self.deepfeatures_dir)
-        self.features.metadata.to_csv(self.output_csv)
-        print("Save FIN_DEEPFEATURES and FIN_METAINFO_SELECTED.csv")
-
+    
     def normalize_same_fin_similarity(self):
         """Set similarity of same-fin pairs to 1."""
         for fin_id in np.unique(self.fin_id_list[self.fin_id_list != 0]):
@@ -182,8 +170,12 @@ class FinFeatureSorter:
                         self.similarity[fin_idx_j, fin_idx_i] = 0
         print("Found %s images have multiple fins" % (occurred_number))
 
-    def save_similarity(self):
-        """Save the similarity matrix to disk."""
+    def save_results(self):
+        """Save FinID back to features and export metadata CSV."""
+        print("Save FIN_DEEPFEATURES and FIN_METAINFO_SELECTED.csv")
+        self.features.metadata["FinID"] = self.fin_id_list
+        self.features.save(self.deepfeatures_dir)
+        self.features.metadata.to_csv(self.output_csv)
         print("Save FIN_SIMILARITY.npy")
         np.save(self.similarity_npy, self.similarity)
 
@@ -192,11 +184,9 @@ class FinFeatureSorter:
         self.load_data()
         self.compute_similarity()
         self.cluster()
-        self.save_results()
         self.normalize_same_fin_similarity()
         self.exclude_same_image_duplicates()
-        self.save_similarity()
-
+        self.save_results()
 
 if __name__ == '__main__':
     #root_dir = r'/media/filming/2025-白海豚/20240825-JM_02-3/'
