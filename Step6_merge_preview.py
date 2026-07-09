@@ -114,7 +114,7 @@ class FinMergePreview:
             preview_fin.loc[len(preview_fin)] = row
         self.preview_fin = preview_fin
 
-    def sort_preview(self):
+    def sort_preview_similarity(self):
         """Sort preview list so that the most similar fins are adjacent."""
         preview_fin = self.preview_fin
         preview_num = len(preview_fin)
@@ -132,6 +132,43 @@ class FinMergePreview:
                 preview_fin.iloc[[cur_i + 1, found_i_with_max_similarity]] = (
                     preview_fin.iloc[[found_i_with_max_similarity, cur_i + 1]].values
                 )
+
+    def sort_preview_by_count(self, ascending=False):
+        """
+        Sort preview list by how many images belong to each FinID.
+
+        Args:
+            ascending: If True, sort from fewest to most occurrences.
+                       If False (default), sort from most to fewest.
+        """
+        preview_fin = self.preview_fin.copy()
+        updated_fin_id_list = self.updated_fin_id_list
+
+        # Count images per FinID using the current (merged) labels.
+        fin_id_counts = pd.Series(updated_fin_id_list).value_counts()
+
+        # Map each preview row's FinID to its count
+        preview_fin['count'] = preview_fin['idx'].map(
+            lambda idx: int(fin_id_counts.get(updated_fin_id_list[idx], 0))
+        )
+
+        # Sort preview rows by that count
+        preview_fin.sort_values(
+            by='count', ascending=ascending, inplace=True, kind='mergesort'
+        )
+
+        # Update annotation with current FinID and count
+        preview_fin['annotation'] = preview_fin['idx'].apply(
+            lambda idx: "FinID%d count: %s\n%s" % (
+                updated_fin_id_list[idx],
+                int(fin_id_counts.get(updated_fin_id_list[idx], 0)),
+                self.features.metadata.at[idx, 'path'],
+            )
+        )
+
+        preview_fin.drop(columns='count', inplace=True)
+        preview_fin.reset_index(drop=True, inplace=True)
+        self.preview_fin = preview_fin
 
     def start_client(self, timeout=30):
         """Start the multiprocessing pipe client, retrying until ready."""
@@ -165,7 +202,8 @@ class FinMergePreview:
 
         try:
             while True:
-                self.sort_preview()
+                self.sort_preview_by_count()
+                preview_fin = self.preview_fin
                 preview_fin_list = preview_fin['idx'].tolist()
                 preview_fin_path_list = preview_fin['path'].tolist()
                 preview_fin_annotation_list = preview_fin['annotation'].tolist()
@@ -196,6 +234,7 @@ class FinMergePreview:
                     for old_id in merged_fin_id_list:
                         if old_id != kept_fin_id:
                             updated_fin_id_list[updated_fin_id_list == old_id] = kept_fin_id
+                self.preview_fin = preview_fin  
                 fin_id_count = len(set(updated_fin_id_list))
                 print("Cur Fin Count: %d"%fin_id_count)
         except (EOFError, BrokenPipeError, ConnectionResetError):
@@ -204,18 +243,25 @@ class FinMergePreview:
             receiver.close()
 
     def relabel_fin_ids(self):
-        """Relabel fin IDs in ascending order (1, 2, 3, ...)."""
-        # TODO: from large one to small one
-        existed_fin_id = []
-        for i in self.updated_fin_id_list:
-            if (i not in existed_fin_id) and (i != 0):
-                existed_fin_id.append(i)
-        sorted_existed_fin_id = np.sort(existed_fin_id)
-        for i in range(len(sorted_existed_fin_id)):
+        """
+        Relabel fin IDs in ascending order by occurrence count.
+
+        FinID 1 is assigned to the fin with the most images, FinID 2 to
+        the next most frequent, and so on. Unlabeled fins keep FinID 0.
+        """
+        fin_id_counts = pd.Series(self.updated_fin_id_list).value_counts()
+        # Drop the unlabeled FinID==0 entry if present.
+        if 0 in fin_id_counts.index:
+            fin_id_counts = fin_id_counts.drop(0)
+
+        # Sort by count descending -> new ID 1 is the largest group.
+        sorted_by_count = fin_id_counts.sort_values(ascending=False)
+
+        for new_id, old_id in enumerate(sorted_by_count.index, start=1):
             self.updated_fin_id_list[
-                self.updated_fin_id_list == sorted_existed_fin_id[i]
-            ] = i + 1
-        #self.updated_fin_id_list = self.features.metadata.FinID.values.copy()
+                self.updated_fin_id_list == old_id
+            ] = new_id
+
         self.features.metadata.FinID = self.updated_fin_id_list
 
     def plot_statistics(self):
