@@ -2,7 +2,6 @@
 # coding: utf-8
 # Match Left side and Right side of fin
 # 在制作 preview slide 时，匹配并移动 Fin
-# 根据 Fin 像素大小排序，选像素最高者
 
 import cv2
 import glob
@@ -13,7 +12,6 @@ from pathlib import Path
 
 from wildlife_tools.data import FeatureDataset
 
-
 def create_empty_folder(folder):
     folder_path = Path(folder)
     if folder_path.exists():
@@ -23,7 +21,7 @@ def create_empty_folder(folder):
 
 
 def pair_fin(root_dir):
-    """Pair fins, assign dolphin IDs, and organize social relationship folders."""
+    """Pair fins, assign dolphin IDs, and organize social structure folders."""
     root_dir = str(root_dir)
     features = FeatureDataset.from_file(
         os.path.join(root_dir, "METAINFO", "FIN_DEEPFEATURES_MERGED")
@@ -58,19 +56,43 @@ def pair_fin(root_dir):
         os.path.join(root_dir, "METAINFO", "FIN_DEEPFEATURES_SELECTED_MERGED_PAIRED")
     )
 
+    # TODO: check possible error: eg, same dolphin was showed on same orignal image
+
     # Soft link original image to subfolder
     print("Linking orignal image to dolphin folder")
     DphID_list = features.metadata["DphID"].unique()
+    # Count distinct DphIDs present in each original image
+    dphid_count_per_img = (
+        features.metadata.loc[features.metadata["DphID"] != 0]
+        .groupby("orig_img")["DphID"]
+        .nunique()
+    )
+
+    # creat folder to store orignal images with multiple dolphins
+    create_empty_folder(os.path.join(root_dir, "Mutiple"))
+
     for DphID in DphID_list:
+        new_multiple_folder_flag = 1
+        new_single_folder_flag = 1
         paths = features.metadata.query("DphID==%d" % DphID)["orig_img"]
         if DphID != 0:
-            dest_dir = os.path.join(root_dir, "DphID%03d" % DphID)
-            create_empty_folder(dest_dir)
-            for dolphin in paths:
-                src = os.path.join(root_dir, dolphin)
-                dest = os.path.join(dest_dir, dolphin)
+            single_dir = os.path.join(root_dir, "DphID%03d" % DphID)
+            multiple_dir = os.path.join(root_dir, "Mutiple", "DphID%03d" % DphID)
+            for ori_img in paths:
+                src = os.path.join(root_dir, ori_img)
+                if dphid_count_per_img.get(ori_img, 1) > 1:
+                    if new_multiple_folder_flag:
+                        create_empty_folder(multiple_dir)
+                        new_multiple_folder_flag = 0
+                    dest = os.path.join(multiple_dir, ori_img)
+                else:
+                    if new_single_folder_flag:
+                        create_empty_folder(single_dir)
+                        new_single_folder_flag = 0
+                    dest = os.path.join(single_dir, ori_img)
                 if not os.path.exists(dest):
                     os.symlink(src, dest)
+
     # Move unclassied original image to Quality below 60
     unclassied_img_list = [
         i

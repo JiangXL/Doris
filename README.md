@@ -18,3 +18,5 @@ only cofirm fin number larger than 5?
 1. batch
 2. JIT
 3. TRT
+
+从 Blur, LOW CONFIDENCE, LOW QUALITY 里寻回

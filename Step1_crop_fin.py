@@ -163,12 +163,11 @@ class FinCropper:
         meta_info.to_csv(meta_path, index=False)
         print(f"元数据已保存: {meta_path}")
 
-        # 保存未检测到背鳍的图像信息
-        if no_fin_info_list:
-            no_fin_df = pd.DataFrame(no_fin_info_list)
-            no_fin_path = os.path.join(meta_dir, "IMAGE_METAINFO.csv")
-            no_fin_df.to_csv(no_fin_path, index=False)
-            print(f"未检测到背鳍的图像元数据已保存: {no_fin_path}")
+        # 保存原始图像信息
+        img_info_df = pd.DataFrame(img_info_list)
+        img_info_path = os.path.join(meta_dir, "IMAGE_METAINFO.csv")
+        img_info_df.to_csv(img_info_path, index=False)
+        print(f"原始图像元数据已保存: {img_info_path}")
 
         # 保存可视化
         plt.figure(figsize=(8, 6))
