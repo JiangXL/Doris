@@ -102,7 +102,7 @@ class FinQualityFilter:
             if not os.path.exists(dest):
                 os.symlink(src, dest)
 
-def plot_statistics_result(self):
+    def plot_statistics_result(self):
         """Plot and save the filter statistics result."""
         total_fin_num = len(self.metainfo)
         selected_clearness_num = int(np.sum(self.metainfo.clearness > self.clearness_threshold))

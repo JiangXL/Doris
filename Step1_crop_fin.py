@@ -40,9 +40,6 @@ class FinCropper:
         Args:
             jpg_path: 原始 JPG 图像路径
             output_dir: 背鳍剪裁图保存目录（FIN 子目录会在此创建）
-        Returns:
-            tuple(list[dict], dict|None): 该图像检测到的所有背鳍元数据列表，
-                以及未检测到背鳍时的图像信息（检测到则返回 None）
         """
         ori_img_name = os.path.basename(jpg_path)
         fin_save_dir = os.path.join(output_dir, "FIN")
@@ -51,14 +48,14 @@ class FinCropper:
         exif = read_exif(jpg_path)
         fin_rows = []
 
-        img_row = {
+        img_row= {
                 "orig_img": ori_img_name,
                 "orig_img_w": exif["PixelXDimension"],
                 "orig_img_h": exif["PixelYDimension"],
                 "focusposition2": exif["FocusPosition2"],
                 "temperature": exif["AmbientTemperature"],
                 "datetime": exif["DateTime"],
-                "no_fin": 1
+                "fin_num": 0
             }
 
         # detect fin from orignal image
@@ -70,7 +67,7 @@ class FinCropper:
                 continue
             # check and remove dulicated fin(s)
             keep_indices = filter_duplicate_detections(boxes, self.iou_threshold)
-            img_rows["no_fin"] = 0
+            img_row["fin_num"] = len(keep_indices)
             # check each found fin
             for new_idx, fin_idx in enumerate(keep_indices):
                 xyxy = boxes[fin_idx].xyxy
@@ -102,9 +99,9 @@ class FinCropper:
                     }
                 )
         if not fin_rows:
-            return fin_rows, img_row
-        else:
             return None, img_row
+        else:
+            return fin_rows, img_row
 
     def crop(
             self,
@@ -150,7 +147,7 @@ class FinCropper:
             fin_rows, img_row = self._detect_and_crop(jpg_path, output_dir)
             if fin_rows is not None:
                 # append new found fin metainfo to final row of table
-                for row in rows:
+                for row in  fin_rows:
                     meta_info.loc[len(meta_info)] = row
             img_info_list.append(img_row)
         # 生成唯一编号
