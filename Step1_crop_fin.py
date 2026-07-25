@@ -20,7 +20,7 @@ class FinCropper:
     """背鳍检测与剪裁器"""
     def __init__(
         self,
-        yolo_model_path: str = "models/fin_yolo_3class_best.pt",
+        yolo_model_path: str = "models/fin_yolo_3class_PICWD_best.pt",
         #yolo_model_path: str = "models/fin_yolo_best.pt",
         #yolo_model_path: str = "models/fin_yolo_best.onnx",
         blur_model_path: str = "models/blur_detection_resnet101_final.pth",
@@ -55,6 +55,7 @@ class FinCropper:
                 "focusposition2": exif["FocusPosition2"],
                 "temperature": exif["AmbientTemperature"],
                 "datetime": exif["DateTime"],
+                "subsectime": exif["SubSecTime"],
                 "fin_num": 0
             }
 

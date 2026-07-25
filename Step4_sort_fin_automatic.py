@@ -9,7 +9,7 @@ from wildlife_tools.features import DeepFeatures
 from wildlife_tools.similarity import CosineSimilarity
 from wildlife_tools.data import FeatureDataset
 
-class FinFeatureSorter:
+class FinSorter:
     """Automatically sort/cluster fin features based on cosine similarity."""
 
     DEFAULT_THRESHOLD = 0.85
@@ -195,5 +195,5 @@ if __name__ == '__main__':
         root_dir = sys.argv[1]
     else:
         print("No root directory is provided")
-    sorter = FinFeatureSorter(root_dir=root_dir)
+    sorter = FinSorter(root_dir=root_dir)
     sorter.run()

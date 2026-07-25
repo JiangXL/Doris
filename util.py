@@ -30,9 +30,12 @@ def read_exif(image_path):
     exif = {
         "FocusPosition2":-1,
         "DateTime":"",
+        "SubSecTime":"",
         "AmbientTemperature":-1,
         "PixelXDimension":-1,
         "PixelYDimension":-1,
+        "Exposure":"",
+        "FocalLength35mm":-1,
     }
     with pyexiv2.Image(image_path) as img:
         metadata = img.read_exif()
@@ -42,5 +45,8 @@ def read_exif(image_path):
         exif["PixelXDimension"]= int(metadata["Exif.Photo.PixelXDimension"])
         exif["PixelYDimension"]= int(metadata["Exif.Photo.PixelYDimension"])
         exif["AmbientTemperature"] = int(metadata["Exif.Sony2Fp.AmbientTemperature"])
-        exif["DateTime"] = metadata["Exif.Image.DateTime"]
+        exif["DateTime"] = metadata["Exif.Photo.DateTimeOriginal"]
+        exif["SubSecTime"] = metadata["Exif.Photo.SubSecTimeOriginal"]
+        exif["Exposure"] = metadata["Exif.Photo.ExposureTime"]
+        exif["FocalLength35mm"] = int(metadata["Exif.Photo.FocalLengthIn35mmFilm"])
     return exif
