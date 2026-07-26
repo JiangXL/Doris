@@ -10,7 +10,7 @@ class ImageScanner:
         self.root_dir = ""
         # initilize DataFrame
         self.img_df = pd.DataFrame(
-            columns=["orig_name", "orig_img_w", "orig_img_h",
+            columns=["orig_img_name", "orig_img_w", "orig_img_h",
                 "focusposition2", "temperature", "datetimesec",
                 "exposure", "focuslength35mm"
             ]
@@ -27,10 +27,10 @@ class ImageScanner:
             with pyexiv2.Image(jpg) as img:
                 row= {}
                 metadata = img.read_exif()
-                row["orig_name"] =  os.path.basename(jpg)
-                row["focusposition2"] = int(metadata["Exif.Sony2Fp.FocusPosition2"])
+                row["orig_img_name"] =  os.path.basename(jpg)
                 row["orig_img_w"]= int(metadata["Exif.Photo.PixelXDimension"])
                 row["orig_img_h"]= int(metadata["Exif.Photo.PixelYDimension"])
+                row["focusposition2"] = int(metadata["Exif.Sony2Fp.FocusPosition2"])
                 row["temperature"] = int(metadata["Exif.Sony2Fp.AmbientTemperature"])
                 datetime = metadata["Exif.Photo.DateTimeOriginal"]
                 subsectime = metadata["Exif.Photo.SubSecTimeOriginal"]
