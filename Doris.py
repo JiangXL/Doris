@@ -4,12 +4,12 @@ import time
 import subprocess
 from util import select_folder
 
-from Step4_sort_fin_automatic import FinFeatureSorter
+from Step4_sort_fin_automatic import FinSorter
 from Step5_sort_fin_by_hand import FinInteractiveLabeler
 from Step6_merge_preview import FinMergePreview
 from Step7_pair_fin import pair_fin
 from Step8_statistics import statistics
-from  Step9_apply_change import convert_symlinks
+from Step9_apply_change import convert_symlinks
 
 
 def TUI(root_dir):
@@ -52,12 +52,7 @@ def TUI(root_dir):
             from Step2_filter_low_quality import FinQualityFilter
             filter_obj = FinQualityFilter(root_dir=root_dir)
             filter_obj.auto_filter()
-            ret = "N" # TODO: move choice inside filter module
-            while (ret != "Y"):
-                ret = input("Done auto filering, please the FIN folder and recorrect result\n"
-                            +"Type Y to continue: ")
-                if ret == "Y":
-                    filter_obj.confirm_filter()
+            filter_obj.confirm_filter()
         elif( choice == STEP3 ):
             from Step3_extract_fin_feature import FinFeatureExtractor
             extractor = FinFeatureExtractor()
@@ -65,8 +60,8 @@ def TUI(root_dir):
             print("Compute the fin fingerprint DONE")
         elif( choice == STEP4 ):
             print("Automatic connect high similar fin")
-            sorter = FinFeatureSorter(root_dir=root_dir)
-            sorter.run()
+            sorter = FinSorter(root_dir=root_dir)
+            sorter.sort()
         elif( choice == STEP5):
             print("Manual cofirm the same fin in similar fin image")
             viewer_script = os.path.join(os.getcwd(), 'ImageGridViewer.py')

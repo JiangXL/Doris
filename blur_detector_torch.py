@@ -14,6 +14,7 @@ import os
 from PIL import Image
 from sklearn.metrics import classification_report, confusion_matrix
 import copy
+from concurrent.futures import ThreadPoolExecutor
 
 
 # ============================================
@@ -483,18 +484,20 @@ class BlurDetector:
             }
         }
     
-    def predict_batch(self, image_inputs):
+    def predict_batch(self, image_inputs, num_workers=8):
         """批量预测
         Args:
             image_inputs: 图像路径/PIL Image/numpy array 的列表
+            num_workers: CPU 预处理线程数（PIL/torch 操作释放 GIL，可并行）
         Returns:
             list[dict]: 每张图像的预测结果，格式与 predict() 一致
         """
-        images = []
-        for item in image_inputs:
-            img = self._to_pil(item)
-            img = self.transform(img)
-            images.append(img)
+        # 预处理（PIL 转换 + resize + 归一化）是 CPU 密集操作，多线程并行
+        if num_workers > 1 and len(image_inputs) > 1:
+            with ThreadPoolExecutor(max_workers=num_workers) as pool:
+                images = list(pool.map(lambda item: self.transform(self._to_pil(item)), image_inputs))
+        else:
+            images = [self.transform(self._to_pil(item)) for item in image_inputs]
         
         images = torch.stack(images).to(self.device)
         

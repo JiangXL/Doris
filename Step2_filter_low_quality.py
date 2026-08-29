@@ -29,6 +29,8 @@ class FinQualityFilter:
             (self.metainfo.clearness > self.clearness_threshold)
             * (self.metainfo.crop_conf > self.crop_conf_threshold)
         )
+        self.metainfo["clear"] = self.metainfo.clearness > self.clearness_threshold
+        self.metainfo["crop"] = self.metainfo.clearness > self.clearness_threshold
         # Save the updated metainfo DataFrame to CSV
         self.metainfo.to_csv(self.metainfo_csv)
  
@@ -46,7 +48,6 @@ class FinQualityFilter:
         self.create_empty_folder(dest_dir)
         for fin in self.metainfo.query(query_str)["path"]:
             src = os.path.join(self.root_dir, fin)
-            #dest = os.path.join(dest_dir, fin[4:])
             dest = os.path.join(dest_dir, os.path.basename(fin))
             os.symlink(src, dest)
 
@@ -89,8 +90,8 @@ class FinQualityFilter:
         """Create symlinks for original images that have no selected fins."""
         lowquality_img = [
             i
-            for i in self.metainfo.orig_img.unique()
-            if i not in self.metainfo.loc[self.metainfo["select"] == True, "orig_img"].unique()
+            for i in self.metainfo.orig_img_name.unique()
+            if i not in self.metainfo.loc[self.metainfo["select"] == True, "orig_img_name"].unique()
         ]
         print("Total low quality images number:", len(lowquality_img))
         for img in tqdm(lowquality_img):
@@ -149,6 +150,10 @@ class FinQualityFilter:
         self.create_category_folders()
 
     def confirm_filter(self):
+        ret = "N" 
+        while (ret != "Y"):
+            ret = input("Done auto filering, please the FIN folder and recorrect result\n"
+                    +"Type Y to continue: ")
         self.scan_user_confirmation()
         #TODO: plot distribution after selection
         self.link_low_quality_originals()

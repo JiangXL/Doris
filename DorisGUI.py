@@ -18,18 +18,19 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
 
 import os
 import sys
-import csv
 from collections import defaultdict
+
+import pandas as pd
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QSplitter,
     QListWidget, QListWidgetItem, QLabel, QVBoxLayout, QDialog,
     QScrollArea, QFileDialog, QToolBar, QAction, QMessageBox,
+    QGraphicsView, QGraphicsScene,
 )
-from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler
+from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 
-DEFAULT_ROOT = "/media/dolphin/2026PHOTO/20260324-A1-ZR-JM-SC-ZLF/PHOTO/02[F]_GM"
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 THUMB_SIZE = 256
 
@@ -123,23 +124,51 @@ class ImageGrid(QListWidget):
 
     def _open_full(self, item):
         path = item.data(Qt.UserRole)
-        dlg = QDialog(self)
-        dlg.setWindowTitle(os.path.basename(path))
-        dlg.resize(1000, 700)
-        lay = QVBoxLayout(dlg)
-        scroll = QScrollArea()
-        lbl = QLabel()
-        reader = QImageReader(path)
-        reader.setAutoTransform(True)
-        pm = QPixmap.fromImage(reader.read())
-        if not pm.isNull():
-            pm = pm.scaled(dlg.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        lbl.setPixmap(pm)
-        lbl.setAlignment(Qt.AlignCenter)
-        scroll.setWidget(lbl)
-        scroll.setWidgetResizable(True)
-        lay.addWidget(scroll)
+        dlg = ImageViewerDialog(path, self)
         dlg.exec_()
+
+
+class ZoomableView(QGraphicsView):
+    """滚轮缩放(以光标为中心), 左键拖拽平移, 双击适应窗口。"""
+
+    def __init__(self, scene, parent=None):
+        super().__init__(scene, parent)
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)               # 拖拽平移
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # 以光标为中心缩放
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+
+    def wheelEvent(self, event):
+        factor = 1.25 if event.angleDelta().y() > 0 else 0.8
+        self.scale(factor, factor)
+
+    def mouseDoubleClickEvent(self, event):
+        self.fitInView(self.scene().itemsBoundingRect(), Qt.KeepAspectRatio)
+
+
+class ImageViewerDialog(QDialog):
+    """大图查看窗口。"""
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(os.path.basename(path))
+        self.resize(1200, 800)
+
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)  # 按 EXIF 方向旋转
+        pm = QPixmap.fromImage(reader.read())
+
+        scene = QGraphicsScene(self)
+        scene.addPixmap(pm)
+        self.view = ZoomableView(scene)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.view)
+
+        # 打开时适应窗口
+        if not pm.isNull():
+            self.view.fitInView(scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
 
 # ---------------------------------------------------------------------------
@@ -198,13 +227,8 @@ class GroupedTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# 数据加载
+# 数据加载 (pandas)
 # ---------------------------------------------------------------------------
-def read_csv(path):
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
-
-
 def list_images(folder, recursive=False):
     out = []
     if recursive:
@@ -225,8 +249,10 @@ class Dataset:
     def __init__(self, root):
         self.root = root
         self.meta_dir = self._find_meta_dir()
-        self.image_rows = self._load_meta("IMAGE_METAINFO.csv")
-        self.fin_rows = self._load_meta("FIN_METAINFO.csv")
+        self.image_df = self._load_meta("IMAGE_METAINFO.csv")
+        self.fin_df = self._load_meta("FIN_METAINFO.csv")
+        if not self.fin_df.empty:
+            self.fin_df["fullpath"] = self.fin_df["path"].map(self._fin_path)
 
     def _find_meta_dir(self):
         for name in ("METAINFO_MEGA", "METAINFO"):
@@ -237,7 +263,7 @@ class Dataset:
 
     def _load_meta(self, fname):
         p = os.path.join(self.meta_dir, fname)
-        return read_csv(p) if os.path.isfile(p) else []
+        return pd.read_csv(p) if os.path.isfile(p) else pd.DataFrame()
 
     # 1. 全图
     def full_images(self):
@@ -245,53 +271,46 @@ class Dataset:
 
     # 2. 连拍分组
     def shots(self):
-        groups = defaultdict(list)
-        for row in self.image_rows:
-            p = os.path.join(self.root, row["orig_img_name"])
-            if os.path.isfile(p):
-                groups.setdefault("shot_%s" % row.get("shot_id", "?"), []).append(p)
-        if not groups:  # 无元数据时退化为单组
-            groups["all"] = self.full_images()
-        return dict(sorted(groups.items(),
-                           key=lambda kv: int(kv[0].split("_")[1])
-                           if kv[0].split("_")[1].isdigit() else 0))
+        if self.image_df.empty:  # 无元数据时退化为单组
+            return {"all": self.full_images()}
+        df = self.image_df[self.image_df["orig_img_name"].map(
+            lambda n: os.path.isfile(os.path.join(self.root, n)))]
+        groups = {}
+        for sid, g in df.groupby("shot_id", sort=True):
+            groups["shot_%s" % sid] = [os.path.join(self.root, n)
+                                       for n in g["orig_img_name"]]
+        return groups
 
-    def _fin_path(self, row):
-        rel = row.get("path", "")
+    def _fin_path(self, rel):
+        rel = str(rel)
         for base in (self.root, os.path.join(self.root, "FIN_MEGA"),
                      os.path.join(self.root, "FIN")):
             p = os.path.join(base, os.path.basename(rel)) if base.endswith(("FIN", "FIN_MEGA")) \
                 else os.path.join(base, rel)
             if os.path.isfile(p):
                 return p
-        p = os.path.join(self.root, rel)
-        return p if os.path.isfile(p) else None
+        return None
 
     # 3. 部位分组
     def aspects(self):
-        groups = defaultdict(list)
-        for row in self.fin_rows:
-            p = self._fin_path(row)
-            if p:
-                label = ASPECT_LABELS.get(row.get("class", "?"), row.get("class", "?"))
-                groups[label].append(p)
-        return dict(groups)
+        df = self.fin_df.dropna(subset=["fullpath"])
+        groups = {}
+        for cls, g in df.groupby("class"):
+            label = ASPECT_LABELS.get(cls, str(cls))
+            groups[label] = list(g["fullpath"])
+        return groups
 
     # 4. 模糊分组
     def blur(self):
-        blur_names = set()
-        for sub in (os.path.join("FIN", "BLUR"), os.path.join("FIN_MEGA", "BLUR")):
-            for p in list_images(os.path.join(self.root, sub)):
-                blur_names.add(os.path.basename(p))
+        blur_names = {os.path.basename(p)
+                      for p in list_images(os.path.join(self.root, "FIN", "BLUR"))}
         groups = {"Blur": [], "Clear": []}
-        rows = self.fin_rows or [{"path": os.path.relpath(p, self.root)}
-                                 for p in list_images(os.path.join(self.root, "FIN_MEGA"))]
-        seen = set()
-        for row in rows:
-            p = self._fin_path(row) if "path" in row else None
-            if p and p not in seen:
-                seen.add(p)
-                groups["Blur" if os.path.basename(p) in blur_names else "Clear"].append(p)
+        if self.fin_df.empty:
+            paths = list_images(os.path.join(self.root, "FIN_MEGA"))
+        else:
+            paths = list(self.fin_df["fullpath"].dropna().unique())
+        for p in paths:
+            groups["Blur" if os.path.basename(p) in blur_names else "Clear"].append(p)
         return groups
 
     # 5. 个体分组
@@ -316,12 +335,12 @@ class Dataset:
                 fin_to_id[os.path.basename(p)] = fid
         if not fin_to_id:
             return {}
-        # shot_id -> FinID 集合
-        shot_to_ids = defaultdict(set)
-        for row in self.fin_rows:
-            fid = fin_to_id.get(os.path.basename(row.get("path", "")))
-            if fid:
-                shot_to_ids[row.get("shot_id", "?")].add(fid)
+        # shot_id -> FinID 集合 (pandas)
+        df = self.fin_df.copy()
+        df["fin_name"] = df["path"].map(lambda p: os.path.basename(str(p)))
+        df["fin_id"] = df["fin_name"].map(fin_to_id)
+        shot_to_ids = df.dropna(subset=["fin_id"]).groupby("shot_id")["fin_id"] \
+            .agg(set).to_dict()
         # 并查集
         parent = {}
 
@@ -416,16 +435,13 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, title)
 
 
-def main():
-    app = QApplication(sys.argv)
-    root = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ROOT
-    if not os.path.isdir(root):
-        QMessageBox.critical(None, "Doris", "目录不存在: %s" % root)
-        sys.exit(1)
-    win = MainWindow(root)
-    win.show()
-    sys.exit(app.exec_())
-
-
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    if len(sys.argv) > 1:
+        root = sys.argv[1] 
+        if not os.path.isdir(root):
+            QMessageBox.critical(None, "Doris", "目录不存在: %s" % root)
+            sys.exit(1)
+        win = MainWindow(root)
+        win.show()
+        sys.exit(app.exec_())

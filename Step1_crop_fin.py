@@ -5,6 +5,7 @@
 """
 import os
 import glob
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -104,13 +105,15 @@ class FinCropper:
             self,
             root_dir: str,
             batch_size: int = 16,
-            decode_workers: int = 8,
+            decode_workers: int = 12,
+            prefetch_batches: int = 2,
         ) :
         """批量检测并剪裁背鳍。
         Args:
             root_dir: 存放原始 *.JPG 的目录（可带末尾斜杠）
             batch_size: YOLO 推理批大小
             decode_workers: JPEG 解码线程数（cv2.imread 释放 GIL，可多线程并行）
+            prefetch_batches: 预取批数（内存中最多同时存在 prefetch_batches+1 批解码图）
         """
         # set root_dir
         self.root_dir = root_dir
@@ -127,14 +130,17 @@ class FinCropper:
         # collect all fin rows, build DataFrame once at the end
         all_rows = []
         batches = [jpg_paths[i:i + batch_size] for i in range(0, len(jpg_paths), batch_size)]
-        # 预取：GPU 推理当前批时，下一批的每张图作为独立任务提交到线程池并行解码
+        # 预取：每张图作为独立任务提交到线程池并行解码，
+        # 主线程做 GPU 推理/后处理时，后续若干批已在后台解码
         with ThreadPoolExecutor(max_workers=decode_workers) as pool:
-            pending = [pool.submit(self._read_image, p) for p in batches[0]] if batches else []
+            inflight = deque()
+            for j in range(min(prefetch_batches + 1, len(batches))):
+                inflight.append([pool.submit(self._read_image, p) for p in batches[j]])
             for bi in tqdm(range(len(batches)), desc="Cropping fin image"):
-                if bi + 1 < len(batches):
-                    next_pending = [pool.submit(self._read_image, p) for p in batches[bi + 1]]
-                else:
-                    next_pending = []
+                pending = inflight.popleft()
+                nxt = bi + prefetch_batches + 1
+                if nxt < len(batches):
+                    inflight.append([pool.submit(self._read_image, p) for p in batches[nxt]])
                 valid_paths, imgs = [], []
                 for fut in pending:
                     p, img = fut.result()
@@ -142,7 +148,6 @@ class FinCropper:
                         continue
                     valid_paths.append(p)
                     imgs.append(img)
-                pending = next_pending
                 if not imgs:
                     continue
                 results = self.fin_detector(imgs, verbose=False)
