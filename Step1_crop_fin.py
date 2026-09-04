@@ -73,7 +73,7 @@ class FinCropper:
             conf = float(boxes[fin_idx].conf)
             fin_class_name = result.names[int(boxes[fin_idx].cls)]
             cropped_img = result.orig_img[y0:y1, x0:x1, :]
-            fin_name = f"{ori_img_name[:-4]}_FIN{new_idx:02d}_{fin_class_name}.JPG"
+            fin_name = f"{ori_img_name[:-4]}_FIN{new_idx:02d}.JPG"
             fin_path = os.path.join(self.fin_save_dir, fin_name)
             cv2.imwrite(fin_path, cropped_img)
 
@@ -187,19 +187,6 @@ class FinCropper:
         self.img_info_df.to_csv(self.img_info_csv, index=False)
         print(f"已保存元数据: {self.fin_info_csv}, {self.img_info_csv}")
 
-    def preview(self, image_path: str):
-        """对单张图像进行背鳍检测并返回标注后的 PIL Image（用于快速预览）。
-        Args:
-            image_path: 图像文件路径
-
-        Returns:
-            PIL.Image.Image: 带检测框的图像
-        """
-        from PIL import Image
-        result = self.fin_detector(image_path)[0]
-        annotated = result.plot()
-        return Image.fromarray(annotated[..., ::-1])  # BGR -> RGB
-
 if __name__ == "__main__":
     import sys
     if len(sys.argv) == 2:
@@ -209,8 +196,3 @@ if __name__ == "__main__":
     # 执行批量剪裁
     cropper.crop(root_dir)
     cropper.save_info_to_csv()
-
-    # 可选：预览单张图像
-    # jpg_paths = sorted(glob.glob(os.path.join(root_dir, '*.JPG')))
-    # preview_img = cropper.preview(jpg_paths[20])
-    # preview_img.show()
