@@ -4,6 +4,7 @@ import os
 import glob
 import pyexiv2
 import pandas as pd
+from tqdm import tqdm
 
 class ImageScanner:
     def __init__(self):
@@ -22,8 +23,9 @@ class ImageScanner:
         jpg_paths = sorted(glob.glob(
             os.path.join(glob.escape(self.root_dir), "*.JPG")))
         # treat speical characters in paths by glob.escape
-
-        for jpg in jpg_paths:
+        
+        print("Reading Photo Metainfo")
+        for jpg in tqdm(jpg_paths):
             with pyexiv2.Image(jpg) as img:
                 row= {}
                 metadata = img.read_exif()

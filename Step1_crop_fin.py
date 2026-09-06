@@ -72,7 +72,7 @@ class FinCropper:
             x0, y0, x1, y1 = [int(i) for i in xyxy[0]]
             conf = float(boxes[fin_idx].conf)
             fin_class_name = result.names[int(boxes[fin_idx].cls)]
-            cropped_img = result.orig_img[y0:y1, x0:x1, :]
+            cropped_img = result.orig_img[y0:y1, x0:x1, :].copy() 
             fin_name = f"{ori_img_name[:-4]}_FIN{new_idx:02d}.JPG"
             fin_path = os.path.join(self.fin_save_dir, fin_name)
             cv2.imwrite(fin_path, cropped_img)
@@ -104,8 +104,8 @@ class FinCropper:
     def crop(
             self,
             root_dir: str,
-            batch_size: int = 16,
-            decode_workers: int = 12,
+            batch_size: int = 1,
+            decode_workers: int = 6,
             prefetch_batches: int = 2,
         ) :
         """批量检测并剪裁背鳍。
@@ -195,4 +195,5 @@ if __name__ == "__main__":
     cropper = FinCropper()
     # 执行批量剪裁
     cropper.crop(root_dir)
+    #TODO: automatic set batch size based on computer resource
     cropper.save_info_to_csv()

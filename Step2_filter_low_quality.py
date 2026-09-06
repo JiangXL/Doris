@@ -28,7 +28,9 @@ class FinQualityFilter:
             (self.metainfo.clearness > self.clearness_threshold)
             * (self.metainfo.crop_conf > self.crop_conf_threshold)
         )
-        self.metainfo["quality"] = self.metainfo.clearness > self.clearness_threshold
+        self.metainfo["clear"] = (
+            self.metainfo.clearness > self.clearness_threshold
+        ).astype(int)
         # Save the updated metainfo DataFrame to CSV
         self.metainfo.to_csv(self.metainfo_csv)
  

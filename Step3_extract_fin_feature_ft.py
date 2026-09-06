@@ -19,7 +19,8 @@ class FinFeatureExtractorFT:
     DEFAULT_MODEL = 'hf-hub:BVRA/MegaDescriptor-L-384'
     DEFAULT_IMG_SIZE = 384
     DEFAULT_BATCH_SIZE = 32
-    DEFAULT_DEVICE = 'cuda'
+    #DEFAULT_DEVICE = 'cuda'
+    DEFAULT_DEVICE = 'cpu'
 
     def __init__(
         self,

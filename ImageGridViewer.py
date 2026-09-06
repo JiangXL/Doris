@@ -7,6 +7,17 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QPixmap, QPainter, QPen
 from PyQt5.QtCore import Qt, QRect
+import PyQt5
+
+# PyQt5 wheel bug: Qt derives its plugin path from the library location and
+# mangles non-ASCII characters in it, leaving the plugin search path empty
+# ("Could not find the Qt platform plugin ... in ''" / wayland shell
+# integration not found). Point Qt at the whole bundled plugin tree
+# explicitly before QApplication is created.
+os.environ.setdefault(
+    "QT_PLUGIN_PATH",
+    os.path.join(os.path.dirname(PyQt5.__file__), "Qt5", "plugins"),
+)
 
 # =========================
 # Selection Engine（核心）
