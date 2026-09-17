@@ -34,7 +34,7 @@ class FinMergePreview:
         deepfeatures_path='METAINFO/FIN_DEEPFEATURES',
         similarity_path='METAINFO/FIN_SIMILARITY.npy',
         output_features_path='METAINFO/FIN_DEEPFEATURES_MERGED',
-        output_csv_path='METAINFO/FIN_METAINFO_SELECTED_MERGED.csv',
+        metainfo_csv='METAINFO/FIN_METAINFO.csv',
         output_plot_path='METAINFO/FinID_statistics.png',
         fin_output_dir='FIN',
     ):
@@ -47,7 +47,8 @@ class FinMergePreview:
             deepfeatures_path: Relative path to deep features.
             similarity_path: Relative path to similarity .npy file.
             output_features_path: Relative path for merged deep features.
-            output_csv_path: Relative path for merged metadata CSV.
+            metainfo_csv: Relative path to the full metadata CSV; the merged
+                FinID labels are updated in place in this file.
             output_plot_path: Relative path for FinID histogram plot.
             fin_output_dir: Relative directory for organized fin folders.
         """
@@ -58,12 +59,13 @@ class FinMergePreview:
         self.deepfeatures_path = os.path.join(root_dir, deepfeatures_path)
         self.similarity_path = os.path.join(root_dir, similarity_path)
         self.output_features_path = os.path.join(root_dir, output_features_path)
-        self.output_csv_path = os.path.join(root_dir, output_csv_path)
+        self.metainfo_path = os.path.join(root_dir, metainfo_csv)
         self.output_plot_path = os.path.join(root_dir, output_plot_path)
         self.fin_output_dir = os.path.join(root_dir, fin_output_dir)
 
         self.features = None
         self.similarity = None
+        self.full_metainfo = None
         self.preview_fin = None
         self.updated_fin_id_list = None
         self.receiver = None
@@ -90,11 +92,12 @@ class FinMergePreview:
         print(stats_text)
 
     def load_data(self):
-        """Load deep features and similarity matrix."""
+        """Load deep features, similarity matrix and full metadata."""
         self.features = FeatureDataset.from_file(self.deepfeatures_path)
         print("Total FinID count:", len(self.features.metadata.FinID.unique()))
         self.updated_fin_id_list = self.features.metadata.FinID.values.copy()
         self.similarity = np.load(self.similarity_path)
+        self.full_metainfo = pd.read_csv(self.metainfo_path, index_col=0)
 
     def build_preview(self):
         """Build preview DataFrame with clearest image per FinID."""
@@ -274,9 +277,20 @@ class FinMergePreview:
         plt.show()
 
     def save_results(self):
-        """Save merged features and metadata CSV."""
+        """Save merged features and update the full metadata CSV."""
         self.features.save(self.output_features_path)
-        self.features.metadata.to_csv(self.output_csv_path)
+        # merge metadata of the featured fins back into the full metadata
+        for col in self.features.metadata.columns:
+            if col not in self.full_metainfo.columns:
+                self.full_metainfo[col] = np.nan
+            vals = self.features.metadata[col]
+            # pandas3: 字符串值不能写入 float64(全 NaN)列, 先把目标列放宽为 object
+            if not pd.api.types.is_numeric_dtype(vals.dtype) and \
+                    pd.api.types.is_numeric_dtype(self.full_metainfo[col].dtype):
+                self.full_metainfo[col] = self.full_metainfo[col].astype("object")
+            self.full_metainfo.loc[self.features.metadata.index, col] = \
+                vals.values
+        self.full_metainfo.to_csv(self.metainfo_path)
 
     @staticmethod
     def creat_empty_folder(folder):

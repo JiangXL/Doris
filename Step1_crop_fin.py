@@ -104,9 +104,9 @@ class FinCropper:
     def crop(
             self,
             root_dir: str,
-            batch_size: int = 1,
+            batch_size: int = 4,
             decode_workers: int = 6,
-            prefetch_batches: int = 2,
+            prefetch_batches: int = 4,
         ) :
         """批量检测并剪裁背鳍。
         Args:

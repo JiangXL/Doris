@@ -7,6 +7,7 @@ import cv2
 import glob
 import numpy as np
 import os
+import pandas as pd
 import shutil
 from pathlib import Path
 
@@ -26,6 +27,24 @@ def pair_fin(root_dir):
     features = FeatureDataset.from_file(
         os.path.join(root_dir, "METAINFO", "FIN_DEEPFEATURES_MERGED")
     )
+
+    # Full metadata is updated in place with the new columns below
+    metainfo_path = os.path.join(root_dir, "METAINFO", "FIN_METAINFO.csv")
+    full_metainfo = pd.read_csv(metainfo_path, index_col=0)
+
+    def update_metainfo():
+        """Merge feature metadata columns back into FIN_METAINFO.csv."""
+        for col in features.metadata.columns:
+            if col not in full_metainfo.columns:
+                full_metainfo[col] = np.nan
+            vals = features.metadata[col]
+            # pandas3: 字符串值不能写入 float64(全 NaN)列, 先把目标列放宽为 object
+            if not pd.api.types.is_numeric_dtype(vals.dtype) and \
+                    pd.api.types.is_numeric_dtype(full_metainfo[col].dtype):
+                full_metainfo[col] = full_metainfo[col].astype("object")
+            full_metainfo.loc[features.metadata.index, col] = \
+                vals.values
+        full_metainfo.to_csv(metainfo_path)
 
     # Scan the dolphin id from folder structure DphID->FinID->FinImageID
     print("Scanning dolphin id from folder")
@@ -49,9 +68,7 @@ def pair_fin(root_dir):
                     features.metadata["path"] == fin_image_name, "DphID"
                 ] = dolphin_id
 
-    features.metadata.to_csv(
-        os.path.join(root_dir, "METAINFO", "FIN_METAINFO_SELECTED_MERGED_PAIRED.csv")
-    )
+    update_metainfo()
     features.save(
         os.path.join(root_dir, "METAINFO", "FIN_DEEPFEATURES_SELECTED_MERGED_PAIRED")
     )
@@ -190,11 +207,7 @@ def pair_fin(root_dir):
                 ] = MCP_name
             MCP_idx = MCP_idx + 1
 
-    features.metadata.to_csv(
-        os.path.join(
-            root_dir, "METAINFO", "FIN_METAINFO_SELECTED_MERGED_PAIRED_SOCIAL.csv"
-        )
-    )
+    update_metainfo()
     features.save(
         os.path.join(
             root_dir, "METAINFO", "FIN_DEEPPFEATUES_SELECTED_MERGED_PAIRED_SOCIAL"
@@ -218,11 +231,7 @@ def pair_fin(root_dir):
                 ] = NN_name
             NN_idx = NN_idx + 1
 
-    features.metadata.to_csv(
-        os.path.join(
-            root_dir, "METAINFO", "FIN_METAINFO_SELECTED_MERGED_PAIRED_SOCIAL.csv"
-        )
-    )
+    update_metainfo()
     features.save(
         os.path.join(
             root_dir, "METAINFO", "FIN_DEEPPFEATUES_SELECTED_MERGED_PAIRED_SOCIAL"
@@ -246,11 +255,7 @@ def pair_fin(root_dir):
                 ] = SYN_name
             SYN_idx = SYN_idx + 1
 
-    features.metadata.to_csv(
-        os.path.join(
-            root_dir, "METAINFO", "FIN_METAINFO_SELECTED_MERGED_PAIRED_SOCIAL.csv"
-        )
-    )
+    update_metainfo()
     features.save(
         os.path.join(
             root_dir, "METAINFO", "FIN_DEEPPFEATUES_SELECTED_MERGED_PAIRED_SOCIAL"

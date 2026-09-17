@@ -9,80 +9,23 @@ from scipy.optimize import linear_sum_assignment
 from wildlife_tools.features import DeepFeatures
 from wildlife_tools.similarity import CosineSimilarity
 from wildlife_tools.data import FeatureDataset
-
-
-class _KalmanBoxTracker:
-    """Constant-velocity Kalman filter tracking one fin box (SORT-style).
-
-    State: [cx, cy, s, r, vx, vy, vs] where (cx, cy) is the box center,
-    s the box area and r the aspect ratio w/h. The velocity terms absorb
-    consistent frame-to-frame displacement from camera shake and dolphin
-    motion.
-    """
-
-    def __init__(self, box):
-        self.x = np.zeros((7, 1))
-        self.x[:4] = self._box_to_z(box)
-        self.F = np.eye(7)
-        self.F[0, 4] = self.F[1, 5] = self.F[2, 6] = 1
-        self.H = np.zeros((4, 7))
-        self.H[0, 0] = self.H[1, 1] = self.H[2, 2] = self.H[3, 3] = 1
-        self.P = np.eye(7) * 10.0
-        self.P[4:, 4:] *= 1000.0  # high initial velocity uncertainty
-        self.Q = np.eye(7) * 0.01
-        self.Q[6, 6] *= 0.01
-        self.R = np.eye(4)
-        self.R[2:, 2:] *= 10.0
-        self.time_since_update = 0
-
-    @staticmethod
-    def _box_to_z(box):
-        w = box[2] - box[0]
-        h = box[3] - box[1]
-        return np.array([box[0] + w / 2, box[1] + h / 2,
-                         w * h, w / float(h)]).reshape((4, 1))
-
-    @staticmethod
-    def _x_to_box(x):
-        cx, cy = x[0, 0], x[1, 0]
-        s = max(x[2, 0], 1.0)
-        w = np.sqrt(s * x[3, 0])
-        h = s / w
-        return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
-
-    def predict(self):
-        if self.x[6, 0] + self.x[2, 0] <= 0:
-            self.x[6, 0] = 0.0
-        self.x = self.F @ self.x
-        self.P = self.F @ self.P @ self.F.T + self.Q
-        self.time_since_update += 1
-        return self._x_to_box(self.x)
-
-    def update(self, box):
-        self.time_since_update = 0
-        y = self._box_to_z(box) - self.H @ self.x
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
-        self.x = self.x + K @ y
-        self.P = (np.eye(7) - K @ self.H) @ self.P
-
+from KalmanBoxTracker import KalmanBoxTracker
 
 class FinSorter:
     """Automatically cluster fin features based on cosine similarity and shot group."""
 
-    DEFAULT_THRESHOLD = 0.85
+    DEFAULT_THRESHOLD = 0.70
     DEFAULT_SIMILARITY_MATCH = 1.0
     DEFAULT_SIMILARITY_EXCLUDE = 0.0
-    DEFAULT_CENTER_DIST_THRESHOLD = 100  # pixels between adjacent frames
-    DEFAULT_GATE_DIST = 200  # pixels; gating for Hungarian assignment
-    DEFAULT_MAX_AGE = 1  # frames a track may go unmatched before termination
+    DEFAULT_GATE_DIST = 300  # pixels; gating for Hungarian assignment
+    DEFAULT_MAX_AGE = 6  # frames a track may go unmatched before termination
 
     def __init__(
         self,
         root_dir,
         metainfo_csv='METAINFO/FIN_METAINFO.csv',
         deepfeatures_dir='METAINFO/FIN_DEEPFEATURES',
-        output_csv='METAINFO/FIN_METAINFO_SELECTED.csv',
+        output_csv='METAINFO/FIN_METAINFO.csv',
         similarity_npy='METAINFO/FIN_SIMILARITY.npy',
         threshold=DEFAULT_THRESHOLD,
     ):
@@ -91,7 +34,8 @@ class FinSorter:
             root_dir: Root directory of the project.
             metainfo_csv: Relative path to the metadata CSV.
             deepfeatures_dir: Relative path to the deep features directory.
-            output_csv: Relative path for the output selected metadata CSV.
+            output_csv: Relative path for the output metadata CSV; new
+                columns (e.g. FinID) are merged back into the full metadata.
             similarity_npy: Relative path for the output similarity matrix.
             threshold: Cosine similarity threshold for clustering.
         """
@@ -102,41 +46,20 @@ class FinSorter:
         self.similarity_npy = os.path.join(root_dir, similarity_npy)
         self.threshold = threshold
 
-        self.full_metainfo = None
+        self.metainfo = None
         self.features = None
         self.similarity = None
         self.fin_id_list = None
 
     def load_data(self):
         """Load metadata and deep features."""
-        self.full_metainfo = pd.read_csv(self.metainfo_csv, index_col=0)
+        self.metainfo = pd.read_csv(self.metainfo_csv)#, index_col=0)
         self.features = FeatureDataset.from_file(self.deepfeatures_dir)
 
     def compute_similarity(self):
         """Compute cosine similarity matrix between all features."""
         matcher = CosineSimilarity()
         self.similarity = matcher(self.features, self.features)
-
-    @staticmethod
-    def stats_fin_id(_fin_id_list):
-        """Count occurrences of each fin ID."""
-        max_id = int(np.max(_fin_id_list))
-        fin_counter = np.zeros(max_id + 1, dtype=np.int16)
-        # fin_id count from 1, 0 means unclassified fins
-        for i in range(len(_fin_id_list)):
-            fin_id = int(_fin_id_list[i])
-            fin_counter[fin_id] = fin_counter[fin_id] + 1
-        return fin_counter
-
-    def print_fin_distribution(self, _fin_id_list=None):
-        """Print fin ID distribution to stdout."""
-        if _fin_id_list is None:
-            _fin_id_list = self.fin_id_list
-        fin_stats = self.stats_fin_id(_fin_id_list)
-        stats_text = "unclassified fin: %d\n" % (fin_stats[0])
-        for i in range(1, len(fin_stats)):
-            stats_text = stats_text + "fin %d: %d\n" % (i, fin_stats[i])
-        print(stats_text)
 
     def correct_fin_class_by_shot(self, class_col="class",
                                   out_col="class_corrected"):
@@ -186,17 +109,61 @@ class FinSorter:
         cy_b = (box_b[1] + box_b[3]) / 2
         return ((cx_a - cx_b) ** 2 + (cy_a - cy_b) ** 2) ** 0.5
 
-    def automatic_link_fin_by_shot_grup(self,
+    def _load_cumulative_offsets(self):
+        """
+        Load per-frame global (whole-image) motion from
+        METAINFO/IMAGE_METAINFO.csv (written by Step1b_burst_jitter.py)
+        and cumulate it within each shot relative to the shot's first
+        frame. ecc offsets are preferred; pc is the fallback. Offsets map
+        previous-frame coordinates to current-frame coordinates, so a
+        detection box in frame k is moved into the shot's first-frame
+        reference by subtracting its cumulative offset.
+
+        Returns:
+            dict {orig_img_name: (cum_dx, cum_dy)}, or None when no
+            jitter data is available (tracking then runs uncompensated).
+        """
+        path = os.path.join(self.root_dir, "METAINFO", "IMAGE_METAINFO.csv")
+        if not os.path.exists(path):
+            print("No IMAGE_METAINFO.csv, track without motion compensation")
+            return None
+        df = pd.read_csv(path)
+        if "ecc_dx" in df.columns:
+            dx, dy = df["ecc_dx"].copy(), df["ecc_dy"].copy()
+            if "pc_dx" in df.columns:
+                dx = dx.fillna(df["pc_dx"])
+                dy = dy.fillna(df["pc_dy"])
+        elif "pc_dx" in df.columns:
+            dx, dy = df["pc_dx"], df["pc_dy"]
+        else:
+            print("No jitter columns, track without motion compensation")
+            return None
+        df["_dx"] = dx.fillna(0.0)
+        df["_dy"] = dy.fillna(0.0)
+        offsets = {}
+        # filenames are sequential in time within a burst
+        for _, group in df.groupby("shot_id"):
+            group = group.sort_values("orig_img_name")
+            cum_dx = group["_dx"].cumsum()
+            cum_dy = group["_dy"].cumsum()
+            for name, cx, cy in zip(group["orig_img_name"], cum_dx, cum_dy):
+                offsets[name] = (float(cx), float(cy))
+        return offsets
+
+    def automatic_link_fin_by_shot_group(self,
                                         gate_dist=DEFAULT_GATE_DIST,
                                         max_age=DEFAULT_MAX_AGE,
                                         same_class_only=False):
         """
         Must-link: track fins frame-by-frame within each burst (shot_id)
         with a SORT-style tracker (constant-velocity Kalman filter +
-        Hungarian assignment). The Kalman prediction absorbs camera shake
-        and dolphin motion; Hungarian enforces one-to-one matching so one
-        fin cannot be linked to two different dolphins. All members of a
-        track get pairwise similarity 1 so clustering always links them.
+        Hungarian assignment). Whole-image motion (camera shake, boat
+        motion) is compensated first with the per-frame jitter offsets
+        from IMAGE_METAINFO.csv (see _load_cumulative_offsets), so the
+        Kalman filter only has to model dolphin motion; Hungarian
+        enforces one-to-one matching so one fin cannot be linked to two
+        different dolphins. All members of a track get pairwise
+        similarity 1 so clustering always links them.
         Args:
             gate_dist: Max pixel distance between the predicted center and
                 a detection center for a match candidate.
@@ -207,52 +174,52 @@ class FinSorter:
                 the raw 'class' column.
         """
         print("linking fin based on shot group with Kalman + Hungarian")
-        metadata = self.features.metadata
-        if "class_corrected" in metadata.columns:
-            class_col = "class_corrected"
-        else:
-            class_col = "class"
-        # image name column differs between metainfo versions
-        if "orig_img_name" in metadata.columns:
-            img_col = "orig_img_name"
-        else:
-            print("No orig image column found, skip must-link")
-            return
-        if "shot_id" not in metadata.columns:
+        class_col = "class"
+        img_col = "orig_img_name"
+        if "shot_id" not in self.metainfo.columns:
             print("No shot_id column found, skip must-link")
             return
+        offsets = self._load_cumulative_offsets()
 
+        track_id_list = np.zeros(len(self.metainfo), dtype=np.int32)
         track_count = 0
-        link_pair_count = 0
-        for shot_id in sorted(metadata["shot_id"].unique()):
-            shot = metadata[metadata["shot_id"] == shot_id]
+        for shot_id in sorted(self.metainfo["shot_id"].unique()):
+            shot = self.metainfo[self.metainfo["shot_id"] == shot_id]
             tracks = self._track_shot(shot, img_col, class_col,
-                                      gate_dist, max_age, same_class_only)
-            for members in tracks:
-                if len(members) < 2:
-                    continue
+                                      gate_dist, max_age, same_class_only,
+                                      offsets)
+            for track in tracks:
                 track_count += 1
-                link_pair_count += len(members) * (len(members) - 1) // 2
-                for i in range(len(members)):
-                    for j in range(i + 1, len(members)):
-                        self.similarity[members[i], members[j]] = 1
-                        self.similarity[members[j], members[i]] = 1
-        print("Must-link: %d pairs in %d tracks"
-              % (link_pair_count, track_count))
+                for fin in track:
+                    track_id_list[fin] = track_count
+                if len(track) < 2:
+                    continue
+                for i in range(len(track)):
+                    for j in range(i + 1, len(track)):
+                        self.similarity[track[i], track[j]] = 1
+                        self.similarity[track[j], track[i]] = 1
+        self.metainfo["TrackIDInShot"] = track_id_list
+        print("Total %d tracks in %d shot"
+              % (track_count, len(self.metainfo["shot_id"].unique())))
+
 
     def _track_shot(self, shot, img_col, class_col,
-                    gate_dist, max_age, same_class_only):
+                    gate_dist, max_age, same_class_only, offsets=None):
         """Run the Kalman + Hungarian tracker over one burst.
+        When offsets (see _load_cumulative_offsets) are given, detection
+        boxes are moved into the shot's first-frame reference first, so
+        the tracker sees dolphin motion with whole-image jitter removed.
         Returns a list of tracks; each track is a list of fin indices."""
         # image filenames are sequential in time within a burst
-        img_names = sorted(shot[img_col].unique())
+        img_names = sorted(shot[img_col].unique()) #TODO: maybe sort by timestamp
         active = []    # list of (tracker, member_indices, cls)
         finished = []  # member_indices of terminated tracks
         for img in img_names:
             dets = shot[shot[img_col] == img]
             det_idx = list(dets.index)
-            det_boxes = [(row["x_min"], row["y_min"],
-                          row["x_max"], row["y_max"])
+            ox, oy = offsets.get(img, (0.0, 0.0)) if offsets else (0.0, 0.0)
+            det_boxes = [(row["x_min"] - ox, row["y_min"] - oy,
+                          row["x_max"] - ox, row["y_max"] - oy)
                          for _, row in dets.iterrows()]
             pred_boxes = [trk.predict() for trk, _, _ in active]
             matched, un_dets = self._assign(
@@ -264,7 +231,7 @@ class FinSorter:
             for det_i in un_dets:
                 cls = (dets.iloc[det_i][class_col]
                        if class_col in dets.columns else None)
-                active.append([_KalmanBoxTracker(det_boxes[det_i]),
+                active.append([KalmanBoxTracker(det_boxes[det_i]),
                                [det_idx[det_i]], cls])
             still_active = []
             for entry in active:
@@ -302,6 +269,24 @@ class FinSorter:
         matched = [(r, c) for r, c in zip(rows, cols) if cost[r, c] < 1e6]
         matched_dets = {c for _, c in matched}
         return matched, [j for j in range(n_det) if j not in matched_dets]
+
+    def mark_best_in_shot(self, quality_col="clearness"):
+        """
+        find the best quality fin for each track inside the same shot
+        group. Quality score = clearness x crop_conf. Appends a boolean
+        column "BestInShot": True for the highest-scoring fin in each
+        (shot_id, FinID) group; False for everything else.
+        """
+        best = pd.Series(False, index=self.metainfo.index)
+        for shot_id, shot in self.metainfo.groupby("shot_id"):
+            for track_id, track in shot.groupby("TrackIDInShot"):
+                score = track[quality_col] * track["crop_conf"]
+                if score.isna().all():
+                    continue
+                best[score.idxmax()] = True
+        self.metainfo["BestInShot"] = best
+        print("Best in shot: %d marked out of %d fins"
+              % (int(best.sum()), len(self.metainfo)))
 
     def automatic_link_fin(self, index):
         """
@@ -392,11 +377,10 @@ class FinSorter:
         print("Found %s images have multiple fins" % (occurred_number))
 
     def save_results(self):
-        """Save FinID back to features and export metadata CSV."""
-        print("Save FIN_DEEPFEATURES and FIN_METAINFO_SELECTED.csv")
-        self.features.metadata["FinID"] = self.fin_id_list
-        self.features.save(self.deepfeatures_dir)
-        self.features.metadata.to_csv(self.output_csv)
+        """Save FinID to metainfo CSV."""
+        print("Update FIN_METAINFO.csv")
+        self.metainfo["FinID"] = self.fin_id_list
+        self.metainfo.to_csv(self.output_csv, index=False)
         print("Save FIN_SIMILARITY.npy")
         np.save(self.similarity_npy, self.similarity)
 
@@ -404,11 +388,12 @@ class FinSorter:
         """Execute the full sorting pipeline."""
         self.load_data()
         self.compute_similarity()
-        self.correct_fin_class_by_shot()
-        self.automatic_link_fin_by_shot_grup()
+        self.exclude_same_image_duplicates()
+        #self.correct_fin_class_by_shot()
+        self.automatic_link_fin_by_shot_group()
+        self.mark_best_in_shot()
         self.cluster()
         self.normalize_same_fin_similarity()
-        self.exclude_same_image_duplicates()
         self.save_results()
 
 if __name__ == '__main__':

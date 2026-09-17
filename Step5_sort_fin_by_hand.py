@@ -34,7 +34,7 @@ class FinInteractiveLabeler:
         threshold=DEFAULT_THRESHOLD,
         deepfeatures_path='METAINFO/FIN_DEEPFEATURES',
         similarity_path='METAINFO/FIN_SIMILARITY.npy',
-        output_csv='METAINFO/FIN_METAINFO_SELECTED.csv',
+        metainfo_csv='METAINFO/FIN_METAINFO.csv',
     ):
         self.root_dir = root_dir
         self.host = host
@@ -43,20 +43,22 @@ class FinInteractiveLabeler:
         self.threshold = threshold
         self.deepfeatures_path = os.path.join(root_dir, deepfeatures_path)
         self.similarity_path = os.path.join(root_dir, similarity_path)
-        self.output_csv = os.path.join(root_dir, output_csv)
+        self.metainfo_path = os.path.join(root_dir, metainfo_csv)
 
         self.features = None
         self.metainfo = None
+        self.full_metainfo = None
         self.similarity = None
         self.fin_id_list = None
         self.client = None
 
     def load_data(self):
-        """Load deep features and similarity matrix."""
+        """Load deep features, similarity matrix and full metadata."""
         self.features = FeatureDataset.from_file(self.deepfeatures_path)
         self.metainfo = self.features.metadata
         self.similarity = np.load(self.similarity_path)
         self.fin_id_list = self.features.metadata.FinID.values.copy()
+        self.full_metainfo = pd.read_csv(self.metainfo_path, index_col=0)
 
     def start_client(self, timeout=30):
         """Start the multiprocessing pipe client, retrying until ready."""
@@ -97,10 +99,21 @@ class FinInteractiveLabeler:
         print(stats_text)
 
     def _save_progress(self, i=None):
-        """Save current state to disk."""
+        """Save current state to disk and update the full metadata CSV."""
         self.features.metadata["FinID"] = self.fin_id_list
         self.features.save(self.deepfeatures_path)
-        self.features.metadata.to_csv(self.output_csv)
+        # merge metadata of the featured fins back into the full metadata
+        for col in self.features.metadata.columns:
+            if col not in self.full_metainfo.columns:
+                self.full_metainfo[col] = np.nan
+            vals = self.features.metadata[col]
+            # pandas3: 字符串值不能写入 float64(全 NaN)列, 先把目标列放宽为 object
+            if not pd.api.types.is_numeric_dtype(vals.dtype) and \
+                    pd.api.types.is_numeric_dtype(self.full_metainfo[col].dtype):
+                self.full_metainfo[col] = self.full_metainfo[col].astype("object")
+            self.full_metainfo.loc[self.features.metadata.index, col] = \
+                vals.values
+        self.full_metainfo.to_csv(self.metainfo_path)
         np.save(self.similarity_path, self.similarity)
         if i is not None:
             print("\nProcessing %d/%d" % (i, len(self.features)))
