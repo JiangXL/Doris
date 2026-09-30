@@ -3,13 +3,14 @@
 """
 DorisGUI — 中华白海豚照片浏览与分组 GUI
 
-6 个标签页:
+8 个标签页:
   1. 单张全图浏览 (Full Images)
   2. 按连拍分组 (Continuous Shots, IMAGE_METAINFO.csv 的 shot_id)
   3. 按鳍部位分组 (Fin Aspect: DL=Left / DR=Right / Others=Tail, Head, lateral Fin / Wrong=0 )
   4. 按模糊与否分组 (Blur / Clear / Mid, 依据 FIN_METAINFO.csv 的 clear 列)
   5. 按个体编号分组 (Fin ID, FIN_METAINFO.csv 的 FinID 列)
   6. 按社会结构分组 (Social Structure, 同一连拍中个体共现的连通分量)
+  7. FinID 总览 (FinID Overview, 每个个体一张最清晰的代表鳍图)
 
 用法:
   python DorisGUI.py [root_folder]
@@ -25,16 +26,17 @@ from datetime import datetime
 from collections import defaultdict
 
 import pandas as pd
+import numpy as np
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QSplitter,
     QListWidget, QListWidgetItem, QLabel, QVBoxLayout, QDialog,
     QScrollArea, QFileDialog, QToolBar, QAction, QMessageBox,
     QGraphicsView, QGraphicsScene, QStyledItemDelegate, QStyle,
-    QStyleOptionViewItem, QShortcut,
+    QStyleOptionViewItem, QShortcut, QCheckBox, QHBoxLayout, QPushButton,
 )
 from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter, QBrush, QColor, QDrag, QPen, QPalette, QKeySequence
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
 import PyQt5
 
 # PyQt5 wheel bug: Qt derives its plugin path from the library location and
@@ -269,6 +271,7 @@ class ImageGrid(QListWidget):
     """缩略图网格;双击弹窗查看大图。"""
 
     middle_clicked = pyqtSignal(str)  # 中键点击图片 (携带文件路径)
+    paths_dropped = pyqtSignal(list)  # 拖入图片路径 (set_accept_drops(True) 后生效)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -289,12 +292,60 @@ class ImageGrid(QListWidget):
         self.setDragEnabled(True)                             # 可拖出
         self.setDragDropMode(QListWidget.DragOnly)            # 不允许放回自身
         self.setItemDelegate(ThumbOverlayDelegate(self))
-        self._loader = None
         self._loaders = []
         self._items = {}
         self._boxes = {}
         self._labels = {}
+        self._loaded = set()    # 已加载缩略图的路径
+        self._pending = set()   # 已派发给加载线程、尚未完成的路径
+        self._cache_dir = None
+        # 懒加载: 滚动/缩放后延迟 120ms 只加载可视区域的缩略图
+        self._lazy_timer = QTimer(self)
+        self._lazy_timer.setSingleShot(True)
+        self._lazy_timer.setInterval(120)
+        self._lazy_timer.timeout.connect(self._load_visible)
+        # valueChanged(int) 的参数会传给 QTimer.start(msec), 必须吞掉
+        self.verticalScrollBar().valueChanged.connect(
+            lambda *_: self._lazy_timer.start())
+        self.horizontalScrollBar().valueChanged.connect(
+            lambda *_: self._lazy_timer.start())
         self.itemDoubleClicked.connect(self._open_full)
+        self._accept_drops = False  # 默认不接受拖入 (DragOnly)
+
+    def set_accept_drops(self, on):
+        """允许/禁止从其它网格拖入图片路径 (自身拖出的不算)。"""
+        self._accept_drops = on
+        self.setDragDropMode(QListWidget.DragDrop if on
+                             else QListWidget.DragOnly)
+
+    def _drop_ok(self, event):
+        return (self._accept_drops and event.source() is not self
+                and event.mimeData().hasFormat(MIME_PATHS))
+
+    def dragEnterEvent(self, event):
+        if self._drop_ok(event):
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._drop_ok(event):
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not self._drop_ok(event):
+            event.ignore()
+            return
+        paths = bytes(event.mimeData().data(MIME_PATHS)).decode("utf-8").splitlines()
+        paths = [p for p in paths if p]
+        if paths:
+            self.paths_dropped.emit(paths)
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
 
     def mimeData(self, items):
         """拖拽时携带选中项的文件路径。"""
@@ -361,19 +412,13 @@ class ImageGrid(QListWidget):
 
     def show_images(self, paths, boxes=None, labels=None):
         paths = list(paths)  # 调用方可能传 pandas Series
-        for loader in self._loaders:
-            try:
-                loader.loaded.disconnect(self._set_thumb)
-            except TypeError:
-                pass
-            loader.stop()
-        for loader in self._loaders:
-            loader.wait()
-        self._loaders = []
+        self._stop_loaders()
         self._boxes = boxes or {}
         self._labels = labels or {}
         self.clear()
         self._items = {}
+        self._loaded = set()
+        self._pending = set()
         for p in paths:
             # 文件名由 delegate 叠加在缩略图顶部(过长时中间省略), 无需换行处理
             item = QListWidgetItem(os.path.basename(p))
@@ -387,19 +432,80 @@ class ImageGrid(QListWidget):
             return
         # 磁盘缓存目录: 图片公共路径下的 .doris_thumbs (跨 tab 共享)
         try:
-            cache_dir = os.path.join(os.path.commonpath(paths), ".doris_thumbs")
+            self._cache_dir = os.path.join(os.path.commonpath(paths),
+                                           ".doris_thumbs")
         except ValueError:
-            cache_dir = None
+            self._cache_dir = None
+        # 懒加载: 不立即全量加载, 等布局完成后只加载可视区域
+        QTimer.singleShot(0, self._load_visible)
+
+    def _stop_loaders(self):
+        for loader in self._loaders:
+            try:
+                loader.loaded.disconnect(self._set_thumb)
+            except TypeError:
+                pass
+            loader.stop()
+        for loader in self._loaders:
+            loader.wait()
+        self._loaders = []
+
+    def _visible_paths(self):
+        """当前可视区域(上下各预取一屏)内、尚未加载的图片路径。"""
+        rect = self.viewport().rect()
+        rect.adjust(0, -rect.height(), 0, rect.height())
+        out = []
+        for i in range(self.count()):
+            item = self.item(i)
+            if self.visualItemRect(item).intersects(rect):
+                p = item.data(Qt.UserRole)
+                if p not in self._loaded:
+                    out.append(p)
+        return out
+
+    def _load_visible(self):
+        if not self.isVisible():
+            return  # 未显示的 tab 不加载, showEvent 时再触发
+        need = set(self._visible_paths())
+        if not need:
+            return
+        if need <= self._pending and any(l.isRunning() for l in self._loaders):
+            return  # 当前加载队列已覆盖所有可见项
+        # 可见集合变了: 停掉旧队列, 只加载现在可见的
+        self._stop_loaders()
+        self._pending = set()
+        paths = [p for p in self._visible_paths()]
+        if not paths:
+            return
+        self._pending = set(paths)
         # 多线程分片加载 (大 JPEG 解码是瓶颈, 并行数倍提速)
         n_workers = min(8, (os.cpu_count() or 4), len(paths))
         for k in range(n_workers):
             loader = ThumbLoader(paths[k::n_workers], self._boxes,
-                                 self._labels, cache_dir)
+                                 self._labels, self._cache_dir)
             loader.loaded.connect(self._set_thumb)
+            loader.finished.connect(
+                lambda l=loader: self._on_loader_done(l))
             loader.start()
             self._loaders.append(loader)
 
+    def _on_loader_done(self, loader):
+        if loader not in self._loaders:
+            return  # 已被替换的旧加载器, 忽略
+        for p in loader._paths:
+            self._pending.discard(p)  # 含加载失败的, 下次滚动可重试
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._lazy_timer.start(0)  # tab 切到前台时补载可视区域
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._lazy_timer.start()
+
     def _set_thumb(self, path, img):
+        self._pending.discard(path)
+        self._loaded.add(path)
         item = self._items.get(path)
         if item is not None:
             item.setIcon(QIcon(QPixmap.fromImage(img)))
@@ -443,7 +549,7 @@ class ZoomableView(QGraphicsView):
 
 
 class ImageViewerDialog(QDialog):
-    """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小。"""
+    """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小, Ctrl+W 关闭。"""
 
     def __init__(self, paths, index, parent=None, boxes=None, labels=None):
         super().__init__(parent)
@@ -495,6 +601,9 @@ class ImageViewerDialog(QDialog):
             self.view.zoom(1.25)          # =/+ 放大
         elif event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
             self.view.zoom(0.8)           # - 缩小
+        elif event.key() == Qt.Key_W and \
+                event.modifiers() & Qt.ControlModifier:
+            self.close()                  # Ctrl+W 关闭
         else:
             super().keyPressEvent(event)
 
@@ -570,33 +679,63 @@ class GroupListWidget(QListWidget):
 
 class GroupedTab(QWidget):
     def __init__(self, mover=None, full_resolver=None, full_boxes=None,
-                 labels=None, alt_move=False, on_moved=None, parent=None):
+                 labels=None, alt_move=False, on_moved=None, best_mark=None,
+                 similar_provider=None, track_mover=None, exclude=None,
+                 parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
         labels: 图片路径 -> 叠加文字 (如画 shot_id, 可选)
         alt_move: True 时注册 Alt+1..9 快捷键, 把选中图片移入侧边第 N 组
-        on_moved: callable(tab) — 改组成功后回调, 用于刷新其它 tab 的标注"""
+        on_moved: callable(tab) — 改组成功后回调, 用于刷新其它 tab 的标注
+        best_mark: callable(path) -> bool; 给定后显示 "每个 shot 只显示最佳"
+        复选框, 勾选后只显示返回 True 的图 (FIN_METAINFO 的 BestInShot 列)
+        similar_provider: callable(group_name) -> (paths, labels) 或 None;
+        给定后勾选最佳复选框时网格区分成三栏: 上=当前组, 左下=相似个体的鳍图
+        (可拖入上方并入当前组), 右下=排除区
+        track_mover: 勾选最佳复选框时侧边拖放改用的 mover (只改同 track 的鳍)
+        exclude: (fn_current, fn_similar) — 三栏模式右下排除区的处理:
+        fn_current(paths, group) 当前组的鳍拖入 (同 track 赋予新 FinID);
+        fn_similar(paths, group) 左下的鳍拖入 (两 FinID 相似度置 0)"""
         super().__init__(parent)
         self._mover = mover
+        self._track_mover = track_mover
+        self._exclude = exclude
         self._on_moved = on_moved
         self._full_resolver = full_resolver
         self._full_boxes = full_boxes or {}
         self._labels = labels or {}
         self._alt_move = alt_move and mover is not None
+        self._best_mark = best_mark
+        self._best_only = False
+        self._similar_provider = similar_provider
+        self._tri = False           # 三栏模式
+        self.vsplit = None
+        self.similar_grid = None
+        self.excluded_grid = None
+        self._excluded = []         # [(参考组名, 鳍图路径)] 拖入排除区的记录
         self.splitter = QSplitter(Qt.Horizontal)
         self.group_list = GroupListWidget()
-        self.group_list.setMinimumWidth(240)   # 保证初始宽度, 否则 splitter 按空列表 sizeHint 给得很窄
-        self.group_list.setMaximumWidth(420)
+        self.group_list.setMinimumWidth(120)   # 保证初始宽度, 否则 splitter 按空列表 sizeHint 给得很窄
+        self.group_list.setMaximumWidth(160)
         self.group_list.setWordWrap(False)
         self.group_list.setTextElideMode(Qt.ElideNone)  # 不省略
         self.grid = ImageGrid()
         self.splitter.addWidget(self.group_list)
         self.splitter.addWidget(self.grid)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([280, 1000])
+        self.splitter.setSizes([160, 1000])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        if self._best_mark is not None:
+            top = QHBoxLayout()
+            self.best_cb = QCheckBox("只显示 Shot 中最佳鳍图")
+            self.best_cb.setToolTip(
+                "只显示 FIN_METAINFO.csv 中 BestInShot 标记的鳍图")
+            self.best_cb.toggled.connect(self._on_best_toggled)
+            top.addWidget(self.best_cb)
+            top.addStretch(1)
+            lay.addLayout(top)
         lay.addWidget(self.splitter)
         self._groups = {}
         self._tooltips = {}
@@ -670,18 +809,163 @@ class GroupedTab(QWidget):
         else:
             self.group_list.setCurrentRow(0)
 
+    def _on_best_toggled(self, on):
+        self._best_only = on
+        if on and self._similar_provider is not None:
+            self._enter_tri_mode()
+        else:
+            self._exit_tri_mode()
+        self._on_group(None)  # 用当前组重绘网格
+
+    @staticmethod
+    def _titled(title, w):
+        """给子窗口加一行标题。"""
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(2, 2, 2, 0)
+        lay.addWidget(QLabel(title))
+        lay.addWidget(w)
+        return box
+
+    def _enter_tri_mode(self):
+        """网格区分成三栏: 上=当前组(接受拖入), 左下=相似鳍图, 右下=排除区。"""
+        if self._tri:
+            return
+        self._tri = True
+        self.grid.set_accept_drops(True)
+        self.grid.paths_dropped.connect(self._on_top_drop)
+        self.vsplit = QSplitter(Qt.Vertical)
+        self.vsplit.addWidget(self.grid)  # 从主 splitter 移入上半部
+        bottom = QSplitter(Qt.Horizontal)
+        self.similar_grid = ImageGrid()
+        self.similar_grid.setDragEnabled(True)   # 可拖出到上方/排除区
+        self.similar_grid.middle_clicked.connect(self._on_middle)
+        bottom.addWidget(self._titled("相似个体 (拖到上方并入当前组)",
+                                      self.similar_grid))
+        self.excluded_grid = ImageGrid()
+        self.excluded_grid.setDragEnabled(True)   # 可拖回上方 (改回当前 FinID)
+        self.excluded_grid.set_accept_drops(True)
+        self.excluded_grid.paths_dropped.connect(self._on_exclude_drop)
+        self.excluded_grid.middle_clicked.connect(self._on_middle)
+        bottom.addWidget(self._titled("排除区 (拖入 = 判定为不同个体)",
+                                      self.excluded_grid))
+        bottom.setSizes([600, 600])
+        self.vsplit.addWidget(bottom)
+        self.vsplit.setSizes([500, 400])
+        self.splitter.addWidget(self.vsplit)
+
+    def _exit_tri_mode(self):
+        if not self._tri:
+            return
+        self._tri = False
+        self.grid.set_accept_drops(False)
+        self.grid.paths_dropped.disconnect(self._on_top_drop)
+        for g in self.vsplit.findChildren(ImageGrid):
+            g._stop_loaders()  # 先停加载线程再销毁
+        self.splitter.addWidget(self.grid)  # 移回主 splitter
+        self.vsplit.setParent(None)
+        self.vsplit.deleteLater()
+        self.vsplit = None
+        self.similar_grid = None
+        self.excluded_grid = None
+
+    def _refresh_excluded(self):
+        """排除区只显示当前参考组的排除记录, 随组切换刷新。"""
+        if self.excluded_grid is None:
+            return
+        cur = self.group_list.currentItem()
+        g = cur.data(Qt.UserRole) if cur else None
+        paths = [p for gp, p in self._excluded if gp == g]
+        self.excluded_grid.show_images(paths, labels=self._labels)
+
+    def _on_top_drop(self, paths):
+        """拖入上半部: 来自排除区 -> 同 track 的鳍改回当前 FinID (track mover);
+        来自左下相似区 -> 整个体并入当前组 (普通 mover)。"""
+        cur = self.group_list.currentItem()
+        if cur is None:
+            return
+        gname = cur.data(Qt.UserRole)
+        excl = {p for gp, p in self._excluded if gp == gname}
+        from_excl = [p for p in paths if p in excl]
+        other = [p for p in paths if p not in excl]
+        if from_excl:
+            self._on_drop(from_excl, gname, use_track=True)
+            self._excluded = [(gp, p) for gp, p in self._excluded
+                              if not (gp == gname and p in from_excl)]
+            self._refresh_excluded()
+        if other:
+            self._on_drop(other, gname, use_track=False)
+
+    def _on_exclude_drop(self, paths):
+        """拖入右下排除区:
+        来自上方(当前组) -> 同 track 的鳍赋予新 FinID, 新旧 FinID 相似度置 0;
+        来自左下(其它个体) -> 被拖鳍的 FinID 与当前 FinID 相似度置 0。"""
+        if self._exclude is None:
+            return
+        cur = self.group_list.currentItem()
+        if cur is None:
+            return
+        gname = cur.data(Qt.UserRole)
+        cur_paths = set(self._groups.get(gname, []))
+        from_cur = [p for p in paths if p in cur_paths]
+        from_sim = [p for p in paths if p not in cur_paths]
+        fn_cur, fn_sim = self._exclude
+        moved = {}
+        try:
+            if from_cur:
+                moved = fn_cur(from_cur, gname) or {}
+            if from_sim:
+                fn_sim(from_sim, gname)
+        except Exception as e:
+            QMessageBox.warning(self, "排除失败", str(e))
+            return
+        for p in paths:  # 排除区按参考组累积记录
+            if (gname, p) not in self._excluded:
+                self._excluded.append((gname, p))
+        self._refresh_excluded()
+        if moved:  # FinID 变了: 从旧组移除并刷新全部 tab
+            for old in moved:
+                for g in self._groups.values():
+                    if old in g:
+                        g.remove(old)
+            self.set_groups(self._groups, self._tooltips, keep_current=True,
+                            boxes=self._boxes)
+            if self._on_moved is not None:
+                self._on_moved(self)
+        else:  # 只改了相似度: 重绘让左下被排除的对消失
+            self._on_group(None)
+
+    def _filter_best(self, paths):
+        """只保留 BestInShot 标记的图; 无标记信息的图也保留。"""
+        return [p for p in paths if self._best_mark(p) is not False]
+
     def _on_group(self, text):
         item = self.group_list.currentItem()
         if item is None:
             return
-        self.grid.show_images(self._groups.get(item.data(Qt.UserRole), []),
+        paths = self._groups.get(item.data(Qt.UserRole), [])
+        if self._best_only and self._best_mark is not None:
+            paths = self._filter_best(paths)
+        self.grid.show_images(paths,
                               boxes=self._boxes, labels=self._labels)
+        if self._tri and self.similar_grid is not None:
+            sim_paths, sim_labels = self._similar_provider(
+                item.data(Qt.UserRole))
+            labels = dict(self._labels)
+            labels.update(sim_labels)  # 相似度标签优先
+            self.similar_grid.show_images(sim_paths, labels=labels)
+            self._refresh_excluded()  # 排除区跟随当前参考组
 
-    def _on_drop(self, paths, target_name):
-        if self._mover is None or target_name not in self._groups:
+    def _on_drop(self, paths, target_name, use_track=None):
+        """use_track=None 时跟随最佳复选框: 勾选后侧边拖放只改同 track 的鳍。"""
+        if use_track is None:
+            use_track = self._best_only
+        mover = self._track_mover if (use_track and self._track_mover) \
+            else self._mover
+        if mover is None or target_name not in self._groups:
             return
         try:
-            moved = self._mover(paths, target_name)
+            moved = mover(paths, target_name)
         except Exception as e:
             QMessageBox.warning(self, "移动失败", str(e))
             return
@@ -808,6 +1092,14 @@ class Dataset:
                 labels[os.path.basename(p)] = text
         return labels
 
+    def fin_best_marks(self):
+        """BestInShot=True 的鳍图路径集合 (FIN_METAINFO.csv 的现成标记)。"""
+        if self.fin_df.empty or "BestInShot" not in self.fin_df.columns:
+            return set()
+        df = self.fin_df
+        marks = df["BestInShot"].astype(str).str.lower().isin(("true", "1"))
+        return set(df.loc[marks, "fullpath"].dropna())
+
     # 3. 部位分组
     def aspects(self):
         groups = {label: [] for label in ASPECT_LABELS.values()}  # 空组也列出, 作为拖放目标
@@ -835,6 +1127,9 @@ class Dataset:
         if self.fin_df.empty or "FinID" not in self.fin_df.columns:
             return groups
         for fid, g in self.fin_df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
+            #if fid == 0:
+            #    groups["Unclassed Fins"] = list(g["fullpath"])
+            #else:
             groups["FinID_%s" % fid] = list(g["fullpath"])
         return groups
 
@@ -893,6 +1188,89 @@ class Dataset:
             groups[name] = imgs
         return groups
 
+    def _similarity_matrix(self):
+        """懒加载并缓存 FIN_SIMILARITY.npy (与 fin_df 行对齐)。"""
+        if getattr(self, "_sim_loaded", False):
+            return self._sim
+        self._sim_loaded = True
+        self._sim = None
+        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
+        if os.path.isfile(sim_file):
+            try:
+                sim = np.load(sim_file)
+                if sim.shape[0] == len(self.fin_df):
+                    self._sim = sim
+            except Exception:
+                pass
+        return self._sim
+
+    def similar_fins(self, group, threshold=0.4):
+        """与当前 FinID 两两相似度 > threshold 的其它个体鳍图 (同 aspect)。
+        只比较、只返回 BestInShot 标记的鳍图。
+        返回 (paths, labels): 按相似度降序, labels = 'FinID_x sim=0.83'。"""
+        df = self.fin_df
+        m = re.match(r"FinID_(.+)$", group or "")
+        sim = self._similarity_matrix()
+        if not m or df.empty or "FinID" not in df.columns or sim is None:
+            return [], {}
+        try:
+            fid = int(float(m.group(1)))
+        except ValueError:
+            fid = m.group(1)
+        if "BestInShot" in df.columns:
+            marked = df["BestInShot"].astype(str).str.lower() \
+                .isin(("true", "1")).to_numpy()
+        else:
+            marked = np.ones(len(df), dtype=bool)  # 无标记列时不过滤
+        fids = df["FinID"].to_numpy()
+        cur = np.where((fids == fid) & marked)[0]
+        if not len(cur):
+            return [], {}
+        # 每个鳍与当前组最佳鳍的最大相似度 (只比较同 aspect 的行)
+        best = np.full(len(df), -1.0)
+        cls = df["class"].to_numpy() if "class" in df.columns else None
+        for i in cur:
+            row = sim[i]
+            if cls is not None:
+                row = np.where(cls == cls[i], row, -1.0)
+            best = np.maximum(best, row)
+        paths, labels = [], {}
+        for j in np.argsort(-best):
+            if best[j] <= threshold:
+                break
+            if not marked[j]:  # 只显示 BestInShot 标记的鳍图
+                continue
+            ofid = fids[j]
+            if ofid == fid or pd.isna(ofid) or ofid == 0:
+                continue
+            p = df["fullpath"].iloc[j]
+            if not isinstance(p, str):
+                continue
+            paths.append(p)
+            labels[p] = "FinID_%s sim=%.2f" % (
+                int(ofid) if float(ofid).is_integer() else ofid, best[j])
+        return paths, labels
+    
+    # 7. FinID 总览: 每个个体一张代表鳍图 (最清晰的)
+    def fin_id_previews(self):
+        """返回 (paths, labels): 每个 FinID 一张代表图 + 'FinID_x (n)' 角标。"""
+        df = self.fin_df
+        if df.empty or "FinID" not in df.columns \
+                or "fullpath" not in df.columns:
+            return [], {}
+        paths, labels = [], {}
+        for fid, g in df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
+            if fid == 0:
+                continue  # 0 = 未分类
+            if "clearness" in g.columns and g["clearness"].notna().any():
+                rep = g.loc[g["clearness"].idxmax()]  # 最清晰的一张
+            else:
+                rep = g.iloc[0]
+            p = rep["fullpath"]
+            paths.append(p)
+            labels[p] = "FinID_%s (%d)" % (fid, len(g))
+        return paths, labels
+
     # ------------------------------------------------------------------
     # 拖拽改组: 只更新 dataframe 并写回 CSV, 不移动/重命名任何文件
     # ------------------------------------------------------------------
@@ -948,7 +1326,8 @@ class Dataset:
         return {p: p for p in paths}
 
     def move_to_fin_id(self, paths, group):
-        """改个体分组: 只更新 fin_df 的 FinID 列。"""
+        """改个体分组: 只更新 fin_df 的 FinID 列。
+        被拖鳍所属 FinID 的全部鳍一起移动 (即整个个体并入目标组)。"""
         m = re.match(r"FinID_(.+)$", group)
         if not m:
             return {}
@@ -962,9 +1341,121 @@ class Dataset:
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
+        # 扩展到与被拖鳍同 FinID 的所有鳍 (忽略未分类的 0/空)
+        src_ids = [v for v in self.fin_df.loc[mask, "FinID"].dropna().unique()
+                   if v != 0]
+        if src_ids:
+            mask = mask | self.fin_df["FinID"].isin(src_ids)
         self.fin_df.loc[mask, "FinID"] = fid
         self._save_csv(self.fin_df, "FIN_METAINFO.csv")
-        return {p: p for p in paths}
+        # 返回所有实际被移动的鳍, 让界面把它们一起换组
+        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
+
+    def move_track_to_fin_id(self, paths, group):
+        """改个体分组 (勾选最佳鳍图时的侧边拖放): 只更新同 track
+        (shot_id + TrackIDInShot) 的鳍的 FinID, 不动整个个体。"""
+        m = re.match(r"FinID_(.+)$", group)
+        if not m:
+            return {}
+        fid = m.group(1)
+        try:  # FinID 为数值列时保持数值类型
+            fid = int(float(fid))
+        except ValueError:
+            pass
+        if "FinID" not in self.fin_df.columns:
+            self.fin_df["FinID"] = pd.NA
+        mask = self.fin_df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        # 扩展到同 track 的所有鳍 (TrackIDInShot 只在 shot 内唯一, 需带 shot_id)
+        if "TrackIDInShot" in self.fin_df.columns \
+                and "shot_id" in self.fin_df.columns:
+            key_rows = self.fin_df.loc[
+                mask, ["shot_id", "TrackIDInShot"]].dropna()
+            pairs = set(zip(key_rows["shot_id"], key_rows["TrackIDInShot"]))
+            if pairs:
+                row_keys = pd.Series(
+                    list(zip(self.fin_df["shot_id"],
+                             self.fin_df["TrackIDInShot"])),
+                    index=self.fin_df.index)
+                mask = mask | row_keys.isin(pairs)
+        self.fin_df.loc[mask, "FinID"] = fid
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        # 返回所有实际被移动的鳍, 让界面把它们一起换组
+        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
+
+    # ------------------------------------------------------------------
+    # 三栏模式排除区: 相似度置 0 并持久化到 FIN_SIMILARITY.npy
+    # ------------------------------------------------------------------
+    def _zero_sim_between(self, ids_a, ids_b):
+        """把两组 FinID 之间的两两相似度置 0, 写回 FIN_SIMILARITY.npy。"""
+        sim = self._similarity_matrix()
+        if sim is None or "FinID" not in self.fin_df.columns:
+            return
+        fids = self.fin_df["FinID"].to_numpy()
+        ia = np.where(np.isin(fids, [float(i) for i in ids_a]))[0]
+        ib = np.where(np.isin(fids, [float(i) for i in ids_b]))[0]
+        if not len(ia) or not len(ib):
+            return
+        sim[np.ix_(ia, ib)] = 0
+        sim[np.ix_(ib, ia)] = 0
+        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
+        if os.path.isfile(sim_file):
+            bdir = os.path.join(self.meta_dir, "backup")
+            os.makedirs(bdir, exist_ok=True)
+            shutil.copy2(sim_file, os.path.join(
+                bdir, "FIN_SIMILARITY.npy." +
+                datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
+            np.save(sim_file, sim)
+
+    def exclude_to_new_fin_id(self, paths, cur_group):
+        """当前组的鳍拖入排除区: 同 track 的鳍赋予新 FinID (现有最大 +1),
+        新旧 FinID 间相似度置 0, 写回 CSV 和 npy。返回 {path: path}。"""
+        m = re.match(r"FinID_(.+)$", cur_group or "")
+        if not m:
+            return {}
+        try:
+            cur_fid = int(float(m.group(1)))
+        except ValueError:
+            return {}
+        df = self.fin_df
+        mask = df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        # 同 track 扩展 (TrackIDInShot 只在 shot 内唯一, 需带 shot_id)
+        if "TrackIDInShot" in df.columns and "shot_id" in df.columns:
+            key_rows = df.loc[mask, ["shot_id", "TrackIDInShot"]].dropna()
+            pairs = set(zip(key_rows["shot_id"], key_rows["TrackIDInShot"]))
+            if pairs:
+                row_keys = pd.Series(
+                    list(zip(df["shot_id"], df["TrackIDInShot"])),
+                    index=df.index)
+                mask = mask | row_keys.isin(pairs)
+        nums = pd.to_numeric(df["FinID"], errors="coerce")
+        new_fid = int(nums.max()) + 1 if nums.notna().any() else 1
+        df.loc[mask, "FinID"] = new_fid
+        self._save_csv(df, "FIN_METAINFO.csv")
+        self._zero_sim_between({new_fid}, {cur_fid})
+        moved = df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved}
+
+    def exclude_fin_id_pair(self, paths, cur_group):
+        """左下相似鳍拖入排除区: 被拖鳍的 FinID 与当前 FinID 的
+        两两相似度置 0 (不改 FinID), 写回 npy。"""
+        m = re.match(r"FinID_(.+)$", cur_group or "")
+        if not m:
+            return
+        try:
+            cur_fid = int(float(m.group(1)))
+        except ValueError:
+            return
+        mask = self.fin_df["fullpath"].isin(paths)
+        src = [v for v in self.fin_df.loc[mask, "FinID"].dropna().unique()
+               if v != 0]
+        if src:
+            self._zero_sim_between(src, {cur_fid})
 
 
 # ---------------------------------------------------------------------------
@@ -993,18 +1484,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         # 退出前停掉所有缩略图加载线程, 否则线程在解释器退出时析构会段错误
+        # findChildren 覆盖所有网格 (含 Fin ID 三栏模式的相似图网格)
         for i in range(self.tabs.count()):
-            w = self.tabs.widget(i)
-            grids = ([w.grid] if hasattr(w, "grid")
-                     else w.findChildren(ImageGrid))
-            for g in grids:
+            for g in self.tabs.widget(i).findChildren(ImageGrid):
                 for loader in getattr(g, "_loaders", []):
                     loader.stop()
         for i in range(self.tabs.count()):
-            w = self.tabs.widget(i)
-            grids = ([w.grid] if hasattr(w, "grid")
-                     else w.findChildren(ImageGrid))
-            for g in grids:
+            for g in self.tabs.widget(i).findChildren(ImageGrid):
                 for loader in getattr(g, "_loaders", []):
                     loader.wait(2000)
         super().closeEvent(event)
@@ -1014,6 +1500,8 @@ class MainWindow(QMainWindow):
         ds = Dataset(root)
         self.ds = ds
         self._group_tabs = []
+        self._merge_tab = None
+        self._overview_grid = None
         self.tabs.clear()
 
         # 1. 单张全图
@@ -1031,6 +1519,7 @@ class MainWindow(QMainWindow):
         fin_tabs = {"Fin Aspect", "Blur", "Fin ID"}  # 鳍图页: 中键查看原图, 叠加 shot_id
         alt_tabs = {"Fin Aspect", "Blur"}            # 支持 Alt+N 移入第 N 组
         shot_labels = ds.fin_shot_labels()  # 鳍图路径 -> shot_id 叠加文字
+        best_marks = ds.fin_best_marks()    # Fin ID 页 "每 shot 最佳" 筛选
         for title, fn, mover in [
             ("Continuous Shots", ds.shots, ds.move_shot),
             ("Fin Aspect", ds.aspects, ds.move_aspect),
@@ -1044,7 +1533,12 @@ class MainWindow(QMainWindow):
                 full_boxes=shot_boxes if title in fin_tabs else None,
                 labels=shot_labels if title in fin_tabs else None,
                 alt_move=title in alt_tabs,
-                on_moved=self._refresh_tabs)
+                on_moved=self._refresh_tabs,
+                best_mark=best_marks.__contains__ if title == "Fin ID" else None,
+                similar_provider=ds.similar_fins if title == "Fin ID" else None,
+                track_mover=ds.move_track_to_fin_id if title == "Fin ID" else None,
+                exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
+                if title == "Fin ID" else None)
             groups = fn()
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
                 groups = {k: v for k, v in groups.items() if len(v) > 0}
@@ -1058,6 +1552,34 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(tab, title)
             self._group_tabs.append((title, tab, fn))
 
+        # 7. FinID 总览页: 每个个体一张最清晰的代表鳍图, 角标标 FinID 和数量
+        prev_paths, prev_labels = ds.fin_id_previews()
+        tab8 = QWidget()
+        lay = QVBoxLayout(tab8)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self._overview_grid = ImageGrid()
+        self._overview_grid.setDragEnabled(False)
+        self._overview_grid.show_images(prev_paths, labels=prev_labels)
+        self._overview_grid.middle_clicked.connect(self._show_orig_of_fin)
+        lay.addWidget(self._overview_grid)
+        self.tabs.addTab(tab8, "FinID Overview")
+
+    def _show_orig_of_fin(self, path):
+        """总览页中键: 查看该鳍图对应的原始全图。"""
+        orig = self.ds.orig_of_fin(path)
+        if orig is None:
+            QMessageBox.information(self, "Doris", "找不到对应的原图: %s" % path)
+            return
+        dlg = ImageViewerDialog([orig], 0, self, boxes=self.ds.fin_boxes())
+        dlg.exec_()
+
+    def _merge_fin_ids(self, keep_id, drop_id):
+        """合并两个 FinID 后重建全部 tab, 并停留在合并建议页。"""
+        self.ds.merge_fin_ids(keep_id, drop_id)
+        cur = self.tabs.currentIndex()
+        self.load(self.root)
+        self.tabs.setCurrentIndex(min(cur, self.tabs.count() - 1))
+
     def _refresh_tabs(self, origin=None):
         """元数据被拖拽改组更新后, 重建所有分组页的分组和标注 (含发起页)。"""
         ds = self.ds
@@ -1068,6 +1590,7 @@ class MainWindow(QMainWindow):
             groups = fn()
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
                 groups = {k: v for k, v in groups.items() if len(v) > 1}
+                tab._best_mark = ds.fin_best_marks().__contains__  # 标记可能已变
             if not groups:
                 continue
             tooltips = getattr(ds, "social_tooltips", None) \
@@ -1077,6 +1600,11 @@ class MainWindow(QMainWindow):
             boxes = shot_boxes if title == "Continuous Shots" else None
             tab.set_groups(groups, tooltips, keep_current=True, boxes=boxes)
             tab._on_group(None)  # 当前组名没变时信号不发, 强制用新标注重绘网格
+        if self._merge_tab is not None:  # 拖拽改了 FinID, 建议列表同步更新
+            self._merge_tab.set_ideas(ds.merge_ideas())
+        if self._overview_grid is not None:  # 总览页代表图同步更新
+            prev_paths, prev_labels = ds.fin_id_previews()
+            self._overview_grid.show_images(prev_paths, labels=prev_labels)
 
 
 if __name__ == "__main__":

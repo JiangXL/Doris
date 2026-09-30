@@ -27,8 +27,9 @@ only cofirm fin number larger than 5?
 [x]SETP2: 计算相机抖动,如果背鳍占的比例小,则用相机抖动补偿
 []SETP3: 提取背鳍斑点和缺刻?
 []STEP5: use the clearst one as reference image? 搜索连拍图像序列中关联到的高相似度背鳍？
-[]STEP7: 从 Blur, LOW CONFIDENCE, LOW QUALITY 里寻回
+[x]STEP7: 从 Blur, LOW CONFIDENCE, LOW QUALITY 里寻回
 []STEP5: 从高相似度里找不同的，从低相似度里找相同的
+[] 识别 claf 与 adult: 黑色和白色分类讨论
 
 ## UI:
 There following planes:

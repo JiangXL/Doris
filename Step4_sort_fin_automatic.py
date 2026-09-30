@@ -274,8 +274,7 @@ class FinSorter:
         """
         find the best quality fin for each track inside the same shot
         group. Quality score = clearness x crop_conf. Appends a boolean
-        column "BestInShot": True for the highest-scoring fin in each
-        (shot_id, FinID) group; False for everything else.
+        column "BestInShot": True for the highest-scoring fin.
         """
         best = pd.Series(False, index=self.metainfo.index)
         for shot_id, shot in self.metainfo.groupby("shot_id"):
@@ -335,13 +334,67 @@ class FinSorter:
             self.fin_id_list[i] = cur_fin_id 
 
     def cluster(self):
-        """Run automatic clustering over all features."""
+        """Run automatic clustering.
+
+        When BestInShot/TrackIDInShot columns are available, only the
+        best fin of each track is compared with the best fins of other
+        tracks; when two representatives exceed the similarity threshold,
+        every fin sharing their TrackIDInShot gets the same FinID.
+        Otherwise falls back to linking every fin image.
+        """
         self.fin_id_list = np.zeros(len(self.features), dtype=np.int32)
-        for i in range(len(self.similarity)):
-            self.automatic_link_fin(i)
+        self._cluster_by_best_in_shot()
         print("Unclassified /Total fin image:", 
             "%d/%d."%(np.sum(self.fin_id_list == 0), len(self.features)))
         print("Unique FinID number:", len(np.unique(self.fin_id_list)) - 1)
+
+    def _cluster_by_best_in_shot(self):
+        """Cluster tracks through their BestInShot representatives.
+
+        Only fins marked BestInShot are compared (cosine similarity);
+        merging is transitive (union-find), and a merged pair shares its
+        FinID with all fins that have the same TrackIDInShot.
+        Only clear fins whose class is DL or DR participate, and merging
+        only happens between fins of the same aspect (DL with DL, DR with
+        DR); the FinID is propagated only to same-aspect fins in the
+        merged tracks. Everything else is left unclassified (FinID 0).
+        """
+        best_mask = (self.metainfo["BestInShot"].astype(str).str.lower()
+                     .isin(["true", "1"]))
+        aspect_mask = self.metainfo["class"].isin(["DL", "DR"]).to_numpy()
+        clear_mask = self.metainfo["clear"].isin([1]).to_numpy()
+        candidate_mask = best_mask & aspect_mask & clear_mask
+
+        candidate_idx = np.flatnonzero(candidate_mask.to_numpy())
+        classes = self.metainfo["class"].to_numpy()
+        parent = {idx: idx for idx in candidate_idx}
+
+        def find(idx):
+            while parent[idx] != idx:
+                parent[idx] = parent[parent[idx]]
+                idx = parent[idx]
+            return idx
+
+        for idx in candidate_idx:
+            similar = candidate_idx[self.similarity[idx, candidate_idx] > self.threshold]
+            for other in similar:
+                if classes[idx] != classes[other]:
+                    continue  # 只允许同 aspect (DL-DL / DR-DR) 之间合并
+                parent[find(idx)] = find(other)
+
+        groups = {}
+        for idx in candidate_idx:
+            groups.setdefault(find(idx), []).append(idx)
+        track_col = self.metainfo["TrackIDInShot"]
+        fin_id = 0
+        for members in groups.values():
+            fin_id += 1
+            cls = classes[members[0]]  # 同组鳍的 aspect 必然相同
+            track_ids = track_col.iloc[members]
+            # 只把 FinID 传播给同 track 且同 aspect 的鳍
+            member_mask = (track_col.isin(track_ids).to_numpy()
+                           & (classes == cls))
+            self.fin_id_list[member_mask] = fin_id
     
     def normalize_same_fin_similarity(self):
         """Set similarity of same-fin pairs to 1."""
