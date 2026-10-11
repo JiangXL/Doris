@@ -8,8 +8,10 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
   2. 按鳍部位分组 (Fin Aspect: DL=Left / DR=Right / Others=Misc / Wrong=0 )
   3. 按模糊与否分组 (Blur / Clear / Mid, 依据 FIN_METAINFO.csv 的 clear 列)
   4. 按个体编号分组 (Fin ID, FIN_METAINFO.csv 的 FinID 列; 顶栏三个互斥模式:
-     Review=分组浏览 / Match=每 shot 最佳鳍图三栏匹配 / Overview=每个个体一张代表图)
-  5. The Dolphin
+     Review=分组浏览 / Match=每 shot 最佳鳍图三栏匹配 / Overview=每个个体一张代表图
+     (可拖放一张代表图到另一张上合并两个 FinID, 对应 DolphinID 一并合并))
+  5. The Dolphin (顶栏 "Mode" 菜单三互斥模式: Overview=海豚格 DR 拖拽交换 /
+     Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图)
   6. 按社会结构分组 (Social Structure, 同一连拍出现多于一个个体 (不含 FinID_0) 的 shot 分组为 NNxxx)
   7. 统计 (Statistics, FinID 鳍图数柱状图 + FinID shot 数柱状图 + 部位占比饼图)
 
@@ -35,7 +37,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QFileDialog, QToolBar, QAction, QMessageBox,
     QGraphicsView, QGraphicsScene, QStyledItemDelegate, QStyle,
     QStyleOptionViewItem, QShortcut, QHBoxLayout, QPushButton,
-    QStackedWidget, QFrame,
+    QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox,
 )
 from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter, QBrush, QColor, QDrag, QPen, QPalette, QKeySequence
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF, QTimer
@@ -1394,7 +1396,8 @@ class GroupedTab(QWidget):
     def __init__(self, mover=None, full_resolver=None, full_boxes=None,
                  labels=None, alt_move=False, on_moved=None, best_mark=None,
                  similar_provider=None, track_mover=None, exclude=None,
-                 overview_provider=None, merger=None, parent=None):
+                 overview_provider=None, merger=None, clear_mark=None,
+                 parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -1403,6 +1406,8 @@ class GroupedTab(QWidget):
         on_moved: callable(tab) — 改组成功后回调, 用于刷新其它 tab 的标注
         best_mark: callable(path) -> bool; 给定后顶栏出现 "Match Mode" 按钮,
         进入后只显示返回 True 的图 (FIN_METAINFO 的 BestInShot 列)
+        clear_mark: callable(path) -> bool; 给定后顶栏出现 "Clear" 复选框,
+        勾选后 Review 模式只显示 clear==1 的清晰鳍图 (FIN_METAINFO 的 clear 列)
         similar_provider: callable(group_name) -> (paths, labels) 或 None;
         给定后勾选最佳复选框时网格区分成三栏: 上=当前组, 左下=相似个体的鳍图
         (可拖入上方并入当前组), 右下=排除区
@@ -1425,6 +1430,8 @@ class GroupedTab(QWidget):
         self._alt_move = alt_move and mover is not None
         self._best_mark = best_mark
         self._best_only = False
+        self._clear_mark = clear_mark
+        self._clear_only = False
         self._similar_provider = similar_provider
         self._overview_provider = overview_provider
         self._overview = False      # 总览模式
@@ -1447,33 +1454,53 @@ class GroupedTab(QWidget):
         self.splitter.setSizes([160, 1000])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        if self._best_mark is not None or self._overview_provider is not None:
+        if self._best_mark is not None or self._overview_provider is not None \
+                or self._clear_mark is not None:
             bar = QWidget()
             bar.setFixedHeight(26)  # 顶栏限高, 默认会被按钮撑得很高
             top = QHBoxLayout(bar)
             top.setContentsMargins(4, 0, 4, 0)
-            # 三个互斥模式: Review (默认) / Match / Overview
-            modes = [("review", "Review Mode",
-                      "浏览模式: 侧边分组列表 + 当前组全部鳍图")]
-            if self._best_mark is not None:
-                modes.append(("match", "Match Mode",
-                              "匹配模式: 只显示每 shot 最佳鳍图 (BestInShot), "
-                              "网格分三栏: 当前组 / 相似个体 / 排除区"))
-            if self._overview_provider is not None:
-                modes.append(("overview", "Overview Mode",
-                              "总览模式: 每个个体一张最清晰的代表鳍图"))
-            self._mode_btns = {}
-            for key, text, tip in modes:
-                btn = QPushButton(text)
-                btn.setCheckable(True)
-                btn.setToolTip(tip)
-                btn.clicked.connect(lambda _=False, k=key: self._set_mode(k))
-                top.addWidget(btn)
-                self._mode_btns[key] = btn
-            self._mode_btns["review"].setChecked(True)
+            # 模式选择: 单个 "Mode" 图标按钮 + 弹出菜单 (Review 默认 / Match / Overview)
+            # 仅当有其它模式可选时才出现 (Dolphin 审阅页只有 Review, Mode 按钮
+            # 由 Dolphin 页顶栏提供, 这里不再重复)
+            if self._best_mark is not None or self._overview_provider is not None:
+                modes = [("review", "Review Mode",
+                          "浏览模式: 侧边分组列表 + 当前组全部鳍图")]
+                if self._best_mark is not None:
+                    modes.append(("match", "Match Mode",
+                                  "匹配模式: 只显示每 shot 最佳鳍图 (BestInShot), "
+                                  "网格分三栏: 当前组 / 相似个体 / 排除区"))
+                if self._overview_provider is not None:
+                    modes.append(("overview", "Overview Mode",
+                                  "总览模式: 每个个体一张最清晰的代表鳍图"))
+                self._mode_actions = {}
+                menu = QMenu(self)
+                for key, text, tip in modes:
+                    act = menu.addAction(text)
+                    act.setCheckable(True)
+                    act.setToolTip(tip)
+                    act.triggered.connect(
+                        lambda _=False, k=key: self._set_mode(k))
+                    self._mode_actions[key] = act
+                self._mode_actions["review"].setChecked(True)
+                self.mode_btn = QToolButton()
+                self.mode_btn.setText("Mode: Review Mode")
+                self.mode_btn.setIcon(self._mode_icon())
+                self.mode_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                self.mode_btn.setPopupMode(QToolButton.InstantPopup)
+                self.mode_btn.setToolTip("选择浏览模式")
+                self.mode_btn.setMenu(menu)
+                top.addWidget(self.mode_btn)
+                self.count_label = QLabel()
+                top.addWidget(self.count_label)
+            self._clear_cb = None
+            if self._clear_mark is not None:
+                self._clear_cb = QCheckBox("Clear")
+                self._clear_cb.setToolTip("勾选后 Review 模式只显示 "
+                                          "clear==1 的清晰鳍图")
+                self._clear_cb.toggled.connect(self._on_clear_toggled)
+                top.addWidget(self._clear_cb)
             top.addStretch(1)
-            self.count_label = QLabel()
-            top.addWidget(self.count_label)
             lay.addWidget(bar)
         lay.addWidget(self.splitter)
         self._groups = {}
@@ -1558,16 +1585,32 @@ class GroupedTab(QWidget):
             row = 1 if len(names) > 1 and names[0] == "FinID_0" else 0
             self.group_list.setCurrentRow(row)
 
+    @staticmethod
+    def _mode_icon():
+        """"Mode" 按钮图标: 三行滑块样式。"""
+        pm = QPixmap(16, 16)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(90, 90, 90))
+        for i in range(3):
+            p.drawRect(1, 2 + i * 5, 14, 3)
+        p.end()
+        return QIcon(pm)
+
     def _set_mode(self, mode):
         """切换顶栏模式 (互斥): review=分组浏览 (默认), match=只显示每 shot
         最佳鳍图并进入三栏匹配, overview=每个个体一张代表图 (隐藏侧边栏,
         有 merger 时可拖放合并 FinID)。"""
-        for k, btn in self._mode_btns.items():
-            btn.blockSignals(True)
-            btn.setChecked(k == mode)
-            btn.blockSignals(False)
+        for k, act in self._mode_actions.items():
+            act.setChecked(k == mode)  # QAction 无 toggled 触发合并逻辑, 无需 block
+        if hasattr(self, "mode_btn"):
+            self.mode_btn.setText("Mode: %s"
+                                  % self._mode_actions[mode].text())
         self._overview = (mode == "overview")
         self._best_only = (mode == "match")
+        if self._clear_cb is not None:
+            self._clear_cb.setEnabled(mode == "review")  # 筛选只在 Review 模式生效
         self.group_list.setVisible(not self._overview)
         if self._best_only and self._similar_provider is not None:
             self._enter_tri_mode()
@@ -1579,6 +1622,7 @@ class GroupedTab(QWidget):
             self.grid.set_accept_drops(True)
         elif not self._tri:  # 三栏模式自己管理拖放
             self.grid.setDragEnabled(self._mover is not None)
+            self.grid.set_accept_drops(False)  # 退出 overview 合并拖放
         self._on_group(None)  # 重绘网格
 
     def _on_merge_drop(self, paths, target_path):
@@ -1718,6 +1762,11 @@ class GroupedTab(QWidget):
         """只保留 BestInShot 标记的图; 无标记信息的图也保留。"""
         return [p for p in paths if self._best_mark(p) is not False]
 
+    def _on_clear_toggled(self, checked):
+        """"Clear" 复选框: 勾选后 Review 模式只显示 clear==1 的清晰鳍图。"""
+        self._clear_only = checked
+        self._on_group(None)
+
     def _on_group(self, text):
         if self._overview and self._overview_provider is not None:
             paths, labels = self._overview_provider()
@@ -1729,6 +1778,8 @@ class GroupedTab(QWidget):
         paths = self._groups.get(item.data(Qt.UserRole), [])
         if self._best_only and self._best_mark is not None:
             paths = self._filter_best(paths)
+        elif self._clear_only and self._clear_mark is not None:
+            paths = [p for p in paths if self._clear_mark(p)]
         self.grid.show_images(paths,
                               boxes=self._boxes, labels=self._labels)
         if self._tri and self.similar_grid is not None:
@@ -1888,6 +1939,7 @@ class MainWindow(QMainWindow):
         alt_tabs = {"Fin Aspect", "Blur"}            # 支持 Alt+N 移入第 N 组
         shot_labels = ds.fin_shot_labels()  # 鳍图路径 -> shot_id 叠加文字
         best_marks = ds.fin_best_marks()    # Fin ID 页 "每 shot 最佳" 筛选
+        clear_marks = ds.fin_clear_marks()  # Fin ID / Dolphin 页 "Clear" 筛选
         for title, fn, mover in [
             ("Continuous Shots", ds.shots, ds.move_shot),
             ("Fin Aspect", ds.aspects, ds.move_aspect),
@@ -1902,6 +1954,7 @@ class MainWindow(QMainWindow):
                 alt_move=title in alt_tabs,
                 on_moved=self._refresh_tabs,
                 best_mark=best_marks.__contains__ if title == "Fin ID" else None,
+                clear_mark=clear_marks.__contains__ if title == "Fin ID" else None,
                 similar_provider=ds.similar_fins if title == "Fin ID" else None,
                 track_mover=ds.move_track_to_fin_id if title == "Fin ID" else None,
                 exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
@@ -1922,23 +1975,40 @@ class MainWindow(QMainWindow):
             self._group_tabs.append((title, tab, fn))
 
         # 5. 海豚配对页: 每只海豚一格, 上 DL 下 DR, DR 格可拖拽交换;
-        #    "新建海豚"按钮创建空海豚供手工配对; 底部 "Match Mode" 进入
-        #    匹配模式 (三栏: 当前海豚 DL/DR 鳍格 | 海豚列表 | 候选鳍)
+        #    "新建海豚"按钮创建空海豚供手工配对; 顶栏 "Mode" 图标按钮弹出菜单
+        #    选择三个互斥模式: Overview=海豚格 (DR 可拖拽交换, 默认) /
+        #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图
         tab9 = QWidget()
         lay = QVBoxLayout(tab9)
         lay.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
-        btn_new = QPushButton("新建海豚")
-        btn_new.setToolTip("创建一只空海豚 (两格皆空), 可把其它海豚的 DR 拖入")
-        btn_new.clicked.connect(self._new_dolphin)
-        top.addWidget(btn_new)
-        self._btn_match = QPushButton("Match Mode")
-        self._btn_match.setCheckable(True)
-        self._btn_match.setToolTip(
-            "匹配模式: 核对每只海豚的 DL/DR 配对;\n"
-            "候选鳍拖入鳍格 = 确认配对, 鳍图拖出格子 = 确认不匹配")
-        self._btn_match.toggled.connect(self._toggle_match_mode)
-        top.addWidget(self._btn_match)
+        self._btn_new = QPushButton("新建海豚")
+        self._btn_new.setToolTip("创建一只空海豚 (两格皆空), 可把其它海豚的 DR 拖入")
+        self._btn_new.clicked.connect(self._new_dolphin)
+        top.addWidget(self._btn_new)
+        self._dolphin_mode_actions = {}
+        menu = QMenu(self)
+        for key, text, tip in [
+                ("review", "Review Mode",
+                 "审阅模式: 左侧 DolphinID 列表, 右侧显示选中海豚的全部鳍图"),
+                ("match", "Match Mode",
+                 "匹配模式: 核对每只海豚的 DL/DR 配对;\n"
+                 "候选鳍拖入鳍格 = 确认配对, 鳍图拖出格子 = 确认不匹配"),
+                ("overview", "Overview Mode",
+                 "总览模式: 每只海豚一格 (上 DL 下 DR), DR 格可拖拽交换")]:
+            act = menu.addAction(text)
+            act.setCheckable(True)
+            act.setToolTip(tip)
+            act.triggered.connect(lambda _=False, k=key: self._set_dolphin_mode(k))
+            self._dolphin_mode_actions[key] = act
+        self._dolphin_mode_actions["overview"].setChecked(True)
+        self._dolphin_mode_btn = QToolButton()
+        self._dolphin_mode_btn.setText("Mode: Overview Mode")
+        self._dolphin_mode_btn.setIcon(GroupedTab._mode_icon())
+        self._dolphin_mode_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._dolphin_mode_btn.setPopupMode(QToolButton.InstantPopup)
+        self._dolphin_mode_btn.setMenu(menu)
+        top.addWidget(self._dolphin_mode_btn)
         top.addStretch(1)
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
@@ -1950,6 +2020,18 @@ class MainWindow(QMainWindow):
         self._match_panel.unmatch_requested.connect(self._match_unmatch)
         self._dolphin_stack.addWidget(self._dolphin_tab)
         self._dolphin_stack.addWidget(self._match_panel)
+        # Review 模式: 左侧 DolphinID 列表, 右侧该海豚的全部鳍图 (只读)
+        self._dolphin_review_tab = GroupedTab(
+            mover=None, full_resolver=ds.orig_of_fin,
+            labels=ds.dolphin_fin_labels(),
+            clear_mark=ds.fin_clear_marks().__contains__)
+        groups = ds.dolphin_groups()
+        if groups:
+            self._dolphin_review_tab.set_groups(groups)
+        else:
+            self._dolphin_review_tab.grid.show_images([])
+            QListWidgetItem("(no data)", self._dolphin_review_tab.group_list)
+        self._dolphin_stack.addWidget(self._dolphin_review_tab)
         lay.addWidget(self._dolphin_stack)
         self.tabs.addTab(tab9, "Dolphin")
 
@@ -1976,12 +2058,22 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._stats_tab, "Statistics")
 
 
-    def _toggle_match_mode(self, on):
-        """底部 Match Mode 开关: 进/出匹配模式前都重新取最新配对。"""
-        if on:
+    def _set_dolphin_mode(self, mode):
+        """切换 Dolphin 页模式 (互斥): overview=海豚格 (DR 可拖拽交换, 默认),
+        match=匹配面板, review=左侧 DolphinID 列表 + 右侧该海豚全部鳍图。"""
+        for k, act in self._dolphin_mode_actions.items():
+            act.setChecked(k == mode)
+        self._dolphin_mode_btn.setText(
+            "Mode: %s" % self._dolphin_mode_actions[mode].text())
+        self._btn_new.setVisible(mode != "review")  # 审阅列表与新建无关
+        if mode == "review":
+            self._dolphin_review_tab.set_groups(self.ds.dolphin_groups(),
+                                                keep_current=True)
+            self._dolphin_stack.setCurrentWidget(self._dolphin_review_tab)
+        elif mode == "match":
             self._match_panel.show_dolphins(self.ds.dolphins())
             self._dolphin_stack.setCurrentWidget(self._match_panel)
-        else:
+        else:  # overview
             self._dolphin_tab.show_dolphins(self.ds.dolphins())
             self._dolphin_stack.setCurrentWidget(self._dolphin_tab)
 
@@ -2026,6 +2118,7 @@ class MainWindow(QMainWindow):
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
                 groups = {k: v for k, v in groups.items() if len(v) > 1}
                 tab._best_mark = ds.fin_best_marks().__contains__  # 标记可能已变
+                tab._clear_mark = ds.fin_clear_marks().__contains__
             if not groups:
                 continue
             tooltips = getattr(ds, "social_tooltips", None) \
@@ -2042,6 +2135,15 @@ class MainWindow(QMainWindow):
                 boxes = None
             tab.set_groups(groups, tooltips, keep_current=True, boxes=boxes)
             tab._on_group(None)  # 当前组名没变时信号不发, 强制用新标注重绘网格
+        if getattr(self, "_dolphin_review_tab", None) is not None:
+            # Dolphin 审阅页 (配对/FinID 可能已变)
+            groups = self.ds.dolphin_groups()
+            if groups:
+                rt = self._dolphin_review_tab
+                rt._labels = self.ds.dolphin_fin_labels()
+                rt._clear_mark = self.ds.fin_clear_marks().__contains__
+                rt.set_groups(groups, keep_current=True)
+                rt._on_group(None)  # 当前组名没变时信号不发, 强制重绘
         if self._dolphin_tab is not None:  # 配对页同步 (FinID 可能增删)
             self._dolphin_tab.show_dolphins(ds.dolphins())
         if self._stats_tab is not None:  # 统计页同步

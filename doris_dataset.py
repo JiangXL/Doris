@@ -105,7 +105,7 @@ class Dataset:
                  extra(fid, cle, conf, dph))
                 for a, b, c, d, cls, fid, cle, conf, dph in zip(
                     g["x_min"], g["y_min"], g["x_max"], g["y_max"],
-                    g["class"], fids, cles, confs, dphs)]
+                    g["Aspect"], fids, cles, confs, dphs)]
         return boxes
 
     def fin_shot_labels(self):
@@ -144,13 +144,21 @@ class Dataset:
         marks = df["BestInShot"].astype(str).str.lower().isin(("true", "1"))
         return set(df.loc[marks, "fullpath"].dropna())
 
+    def fin_clear_marks(self):
+        """clear==1 (Clear) 的鳍图路径集合; 供 Review 页 "Clear" 筛选复选框。"""
+        if self.fin_df.empty or "clear" not in self.fin_df.columns:
+            return set()
+        df = self.fin_df
+        marks = df["clear"].astype(str).str.lower().isin(("true", "1"))
+        return set(df.loc[marks, "fullpath"].dropna())
+
     # 3. 部位分组
     def aspects(self):
         groups = {label: [] for label in ASPECT_LABELS.values()}  # 空组也列出, 作为拖放目标
         if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
             return groups
         df = self.fin_df.dropna(subset=["fullpath"])
-        for cls, g in df.groupby("class"):
+        for cls, g in df.groupby("Aspect"):
             label = ASPECT_LABELS.get(cls, str(cls))
             groups.setdefault(label, []).extend(g["fullpath"])
         return groups
@@ -297,7 +305,7 @@ class Dataset:
             return [], {}
         # 每个鳍与当前组最佳鳍的最大相似度 (只比较同 aspect 的行)
         best = np.full(len(df), -1.0)
-        cls = df["class"].to_numpy() if "class" in df.columns else None
+        cls = df["Aspect"].to_numpy() if "Aspect" in df.columns else None
         for i in cur:
             row = sim[i]
             if cls is not None:
@@ -383,10 +391,10 @@ class Dataset:
 
     def aspect_counts(self):
         """[(label, count)]: 各部位类别的鳍图数。"""
-        if self.fin_df.empty or "class" not in self.fin_df.columns:
+        if self.fin_df.empty or "Aspect" not in self.fin_df.columns:
             return []
         return [(ASPECT_LABELS.get(c, str(c)), int(n))
-                for c, n in self.fin_df.groupby("class").size().items()]
+                for c, n in self.fin_df.groupby("Aspect").size().items()]
 
     # 9. 海豚配对: DL/DR 鳍配对
     def _extra_dolphins(self):
@@ -422,7 +430,7 @@ class Dataset:
         (无标记时回退到该侧全部鳍图)。"""
         df = self.fin_df
         if df.empty or "FinID" not in df.columns \
-                or "class" not in df.columns:
+                or "Aspect" not in df.columns:
             return []
         changed = False
         if "DolphinID" not in df.columns:
@@ -432,16 +440,16 @@ class Dataset:
         sub = sub[sub["FinID"] != 0]  # 0 = 未分类
 
         def dph_of(fid, cls):
-            v = sub[(sub["FinID"] == fid) & (sub["class"] == cls)][
+            v = sub[(sub["FinID"] == fid) & (sub["Aspect"] == cls)][
                 "DolphinID"].dropna().unique()
             return str(v[0]) if len(v) else None
 
         pairs = {}  # name -> {"dl": fid|None, "dr": fid|None}
-        for fid in sub[sub["class"] == "DL"]["FinID"].unique():
+        for fid in sub[sub["Aspect"] == "DL"]["FinID"].unique():
             n = dph_of(fid, "DL")
             if n:
                 pairs.setdefault(n, {})["dl"] = fid
-        for fid in sub[sub["class"] == "DR"]["FinID"].unique():
+        for fid in sub[sub["Aspect"] == "DR"]["FinID"].unique():
             n = dph_of(fid, "DR")
             if n:
                 pairs.setdefault(n, {})["dr"] = fid
@@ -451,23 +459,23 @@ class Dataset:
         nums = [int(m.group(1)) for n in pairs
                 for m in [re.match(r"Dph(\d+)$", n)] if m]
         nxt = max(nums) + 1 if nums else 1
-        for fid in sorted(sub[sub["class"] == "DL"]["FinID"].unique()):
+        for fid in sorted(sub[sub["Aspect"] == "DL"]["FinID"].unique()):
             if dph_of(fid, "DL") is None:
                 name = "Dph%03d" % nxt
                 nxt += 1
-                df.loc[(df["FinID"] == fid) & (df["class"] == "DL"),
+                df.loc[(df["FinID"] == fid) & (df["Aspect"] == "DL"),
                        "DolphinID"] = name
                 pairs[name] = {"dl": fid, "dr": None}
                 changed = True
         # 未配对的 DR FinID: 先按与 DL 的最高相似度贪心配对
-        unmatched_dr = [f for f in sub[sub["class"] == "DR"]["FinID"].unique()
+        unmatched_dr = [f for f in sub[sub["Aspect"] == "DR"]["FinID"].unique()
                         if dph_of(f, "DR") is None]
         mismatch = self._mismatch_pairs()  # 用户确认过的不匹配对, 不再自动重配
         sim = self._similarity_matrix()
         used_dr = set()
         if sim is not None and unmatched_dr:
             fids = df["FinID"].to_numpy()
-            clss = df["class"].to_numpy()
+            clss = df["Aspect"].to_numpy()
 
             def rows_of(fid, cls):
                 return np.where((fids == fid) & (clss == cls))[0]
@@ -492,7 +500,7 @@ class Dataset:
             for s, name, dr in cands:
                 if s <= match_threshold or dr in used_dr or name in used_dl:
                     continue
-                df.loc[(df["FinID"] == dr) & (df["class"] == "DR"),
+                df.loc[(df["FinID"] == dr) & (df["Aspect"] == "DR"),
                        "DolphinID"] = name
                 pairs[name]["dr"] = dr
                 used_dr.add(dr)
@@ -504,7 +512,7 @@ class Dataset:
                 continue
             name = "Dph%03d" % nxt
             nxt += 1
-            df.loc[(df["FinID"] == dr) & (df["class"] == "DR"),
+            df.loc[(df["FinID"] == dr) & (df["Aspect"] == "DR"),
                    "DolphinID"] = name
             pairs[name] = {"dl": None, "dr": dr}
             changed = True
@@ -512,7 +520,7 @@ class Dataset:
             self._save_csv(df, "FIN_METAINFO.csv")
 
         def best(fid, cls):
-            g = df[(df["FinID"] == fid) & (df["class"] == cls)] \
+            g = df[(df["FinID"] == fid) & (df["Aspect"] == cls)] \
                 .dropna(subset=["fullpath"])
             if g.empty:
                 return None
@@ -529,6 +537,42 @@ class Dataset:
                  best(d["dr"], "DR") if d.get("dr") is not None else None)
                 for name, d in sorted(pairs.items())]
 
+    def dolphin_groups(self):
+        """DolphinID -> 该海豚全部鳍图路径 (按 DolphinID 排序)。"""
+        groups = {}
+        df = self.fin_df
+        if df.empty or "DolphinID" not in df.columns \
+                or "fullpath" not in df.columns:
+            return groups
+        sub = df.dropna(subset=["DolphinID", "fullpath"])
+        for name, g in sub.groupby("DolphinID", sort=True):
+            groups[str(name)] = [p for p in g["fullpath"]
+                                 if isinstance(p, str)]
+        return groups
+
+    def dolphin_fin_labels(self):
+        """鳍图路径 -> 'DL F1' / 'DR F5' 标注 (Dolphin Review Mode 用)。"""
+        labels = {}
+        df = self.fin_df
+        if df.empty or "fullpath" not in df.columns:
+            return labels
+        for _, r in df.iterrows():
+            p = r["fullpath"]
+            if not isinstance(p, str):
+                continue
+            parts = []
+            if isinstance(r.get("Aspect"), str):
+                parts.append(r["Aspect"])
+            fid = r.get("FinID")
+            if fid is not None and not pd.isna(fid):
+                try:
+                    parts.append("F%d" % int(float(fid)))
+                except (TypeError, ValueError):
+                    parts.append(str(fid))
+            if parts:
+                labels[p] = " ".join(parts)
+        return labels
+
     def swap_dolphin_dr(self, src_name, dst_name):
         """交换两只海豚的 DR FinID (目标无 DR 时为移动), 写回 CSV。"""
         df = self.fin_df
@@ -537,17 +581,17 @@ class Dataset:
             return
 
         def dr_of(name):
-            v = df[(df["DolphinID"] == name) & (df["class"] == "DR")][
+            v = df[(df["DolphinID"] == name) & (df["Aspect"] == "DR")][
                 "FinID"].dropna().unique()
             return v[0] if len(v) else None
 
         s, d = dr_of(src_name), dr_of(dst_name)
         if s is None:
             return  # 源海豚没有 DR 可交换
-        df.loc[(df["FinID"] == s) & (df["class"] == "DR"),
+        df.loc[(df["FinID"] == s) & (df["Aspect"] == "DR"),
                "DolphinID"] = dst_name
         if d is not None:
-            df.loc[(df["FinID"] == d) & (df["class"] == "DR"),
+            df.loc[(df["FinID"] == d) & (df["Aspect"] == "DR"),
                    "DolphinID"] = src_name
         self._save_csv(df, "FIN_METAINFO.csv")
 
@@ -590,7 +634,7 @@ class Dataset:
             return
         fidk = self._fid_key(fid)
         mask = (df["FinID"].map(self._fid_key) == fidk) \
-            & (df["class"] == cls)
+            & (df["Aspect"] == cls)
         if not mask.any():
             return
         df.loc[mask, "DolphinID"] = name
@@ -610,7 +654,7 @@ class Dataset:
             return
         fidk = self._fid_key(fid)
         mask = (df["FinID"].map(self._fid_key) == fidk) \
-            & (df["class"] == cls)
+            & (df["Aspect"] == cls)
         if not mask.any():
             return
         names = df.loc[mask, "DolphinID"].dropna().unique()
@@ -618,7 +662,7 @@ class Dataset:
             return
         name = str(names[0])
         other = "DL" if cls == "DR" else "DR"
-        ofids = df[(df["DolphinID"] == name) & (df["class"] == other)][
+        ofids = df[(df["DolphinID"] == name) & (df["Aspect"] == other)][
             "FinID"].dropna().unique()
         if len(ofids):  # 有对侧鳍才构成一对不匹配
             ofidk = self._fid_key(ofids[0])
@@ -635,11 +679,11 @@ class Dataset:
         df = self.fin_df
         sim = self._similarity_matrix()
         if df.empty or sim is None or "FinID" not in df.columns \
-                or "class" not in df.columns:
+                or "Aspect" not in df.columns:
             return [], [], {}
         other = "DR" if cls == "DL" else "DL"
         fids = df["FinID"].to_numpy()
-        clss = df["class"].to_numpy()
+        clss = df["Aspect"].to_numpy()
         keys = pd.Series(fids).map(self._fid_key).to_numpy()
         cur = np.where((keys == self._fid_key(fid)) & (clss == cls))[0]
         if not len(cur):
@@ -714,12 +758,12 @@ class Dataset:
         return moved
 
     def move_aspect(self, paths, group):
-        """改部位类别: 只更新 fin_df 的 class 列。"""
+        """改部位类别: 只更新 fin_df 的 aspect 列。"""
         cls = {v: k for k, v in ASPECT_LABELS.items()}.get(group, group)
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        self.fin_df.loc[mask, "class"] = cls
+        self.fin_df.loc[mask, "Aspect"] = cls
         self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return {p: p for p in paths}
 
