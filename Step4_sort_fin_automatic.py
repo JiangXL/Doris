@@ -61,8 +61,8 @@ class FinSorter:
         matcher = CosineSimilarity()
         self.similarity = matcher(self.features, self.features)
 
-    def correct_fin_class_by_shot(self, class_col="class",
-                                  out_col="class_corrected"):
+    def correct_fin_class_by_shot(self, class_col="AssumedAspect",
+                                  out_col="ConfirmedAspect"):
         """
         Correct DL/DR misclassifications: all fins within one shot (burst)
         should share the same side class. Each shot votes, weighted by
@@ -174,7 +174,7 @@ class FinSorter:
                 the raw 'class' column.
         """
         print("linking fin based on shot group with Kalman + Hungarian")
-        class_col = "class"
+        class_col = "Aspect"
         img_col = "orig_img_name"
         if "shot_id" not in self.metainfo.columns:
             print("No shot_id column found, skip must-link")
@@ -361,12 +361,12 @@ class FinSorter:
         """
         best_mask = (self.metainfo["BestInShot"].astype(str).str.lower()
                      .isin(["true", "1"]))
-        aspect_mask = self.metainfo["class"].isin(["DL", "DR"]).to_numpy()
+        aspect_mask = self.metainfo["Aspect"].isin(["DL", "DR"]).to_numpy()
         clear_mask = self.metainfo["clear"].isin([1]).to_numpy()
         candidate_mask = best_mask & aspect_mask & clear_mask
 
         candidate_idx = np.flatnonzero(candidate_mask.to_numpy())
-        classes = self.metainfo["class"].to_numpy()
+        classes = self.metainfo["Aspect"].to_numpy()
         parent = {idx: idx for idx in candidate_idx}
 
         def find(idx):

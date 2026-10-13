@@ -3,7 +3,9 @@
 """
 DorisGUI — 中华白海豚照片浏览与分组 GUI
 
-7 个标签页:
+8 个标签页:
+  0. Dashboard (处理流程入口: 设置根目录 / 扫描原图 / 切鳍 / 提特征 /
+     聚类 / 导出数据库, 布局参考 dashboard.ui)
   1. 按连拍分组 (Continuous Shots, IMAGE_METAINFO.csv 的 shot_id)
   2. 按鳍部位分组 (Fin Aspect: DL=Left / DR=Right / Others=Misc / Wrong=0 )
   3. 按模糊与否分组 (Blur / Clear / Mid, 依据 FIN_METAINFO.csv 的 clear 列)
@@ -12,8 +14,9 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
      (可拖放一张代表图到另一张上合并两个 FinID, 对应 DolphinID 一并合并))
   5. The Dolphin (顶栏 "Mode" 菜单三互斥模式: Overview=海豚格 DR 拖拽交换 /
      Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图)
-  6. 按社会结构分组 (Social Structure, 同一连拍出现多于一个个体 (不含 FinID_0) 的 shot 分组为 NNxxx)
-  7. 统计 (Statistics, FinID 鳍图数柱状图 + FinID shot 数柱状图 + 部位占比饼图)
+  7. 按社会结构分组 (Social Structure, 整组连拍内出现多于一个 DolphinID 的
+     shot, 同一组 DolphinID 的多个连拍合并为一组 NNxxx)
+  8. 统计 (Statistics, FinID 鳍图数柱状图 + FinID shot 数柱状图 + 部位占比饼图)
 
 用法:
   python DorisGUI.py [root_folder]
@@ -34,13 +37,13 @@ import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QSplitter,
     QListWidget, QListWidgetItem, QLabel, QVBoxLayout, QDialog,
-    QScrollArea, QFileDialog, QToolBar, QAction, QMessageBox,
+    QScrollArea, QFileDialog, QMessageBox,
     QGraphicsView, QGraphicsScene, QStyledItemDelegate, QStyle,
     QStyleOptionViewItem, QShortcut, QHBoxLayout, QPushButton,
-    QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox,
+    QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox, QGridLayout,
 )
 from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter, QBrush, QColor, QDrag, QPen, QPalette, QKeySequence
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF, QTimer, QProcess
 import PyQt5
 
 from doris_dataset import Dataset
@@ -359,6 +362,7 @@ class ImageGrid(QListWidget):
     """缩略图网格;双击弹窗查看大图。"""
 
     middle_clicked = pyqtSignal(str)  # 中键点击图片 (携带文件路径)
+    right_clicked = pyqtSignal(QPoint)  # 右键点击 (携带全局坐标, 供上下文菜单)
     paths_dropped = pyqtSignal(list)  # 拖入图片路径 (set_accept_drops(True) 后生效)
     paths_dropped_on = pyqtSignal(list, str)  # 拖放到某张图上 (额外携带目标图路径)
 
@@ -454,6 +458,14 @@ class ImageGrid(QListWidget):
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """右键: 光标下的图未选中时先单独选中它, 再弹出菜单 (全局坐标)。"""
+        item = self.itemAt(event.pos())
+        if item is not None and not item.isSelected():
+            self.clearSelection()
+            item.setSelected(True)
+        self.right_clicked.emit(event.globalPos())
 
     def startDrag(self, actions):
         """自定义拖拽图像: 第一张缩略图 + 数量角标, MoveAction 光标。"""
@@ -1397,7 +1409,7 @@ class GroupedTab(QWidget):
                  labels=None, alt_move=False, on_moved=None, best_mark=None,
                  similar_provider=None, track_mover=None, exclude=None,
                  overview_provider=None, merger=None, clear_mark=None,
-                 parent=None):
+                 best_marker=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -1408,6 +1420,8 @@ class GroupedTab(QWidget):
         进入后只显示返回 True 的图 (FIN_METAINFO 的 BestInShot 列)
         clear_mark: callable(path) -> bool; 给定后顶栏出现 "Clear" 复选框,
         勾选后 Review 模式只显示 clear==1 的清晰鳍图 (FIN_METAINFO 的 clear 列)
+        best_marker: callable(paths) -> bool; 给定后右键网格或按 B 键把选中鳍图
+        标记为最佳 (写回 FIN_METAINFO 的 BestInFin 列)
         similar_provider: callable(group_name) -> (paths, labels) 或 None;
         给定后勾选最佳复选框时网格区分成三栏: 上=当前组, 左下=相似个体的鳍图
         (可拖入上方并入当前组), 右下=排除区
@@ -1432,6 +1446,7 @@ class GroupedTab(QWidget):
         self._best_only = False
         self._clear_mark = clear_mark
         self._clear_only = False
+        self._best_marker = best_marker
         self._similar_provider = similar_provider
         self._overview_provider = overview_provider
         self._overview = False      # 总览模式
@@ -1519,6 +1534,12 @@ class GroupedTab(QWidget):
                 sc.setContext(Qt.WidgetWithChildrenShortcut)
                 sc.activated.connect(
                     lambda i=i: self._move_to_group_index(i - 1))
+        if self._best_marker is not None:
+            # B 键 / 右键菜单: 把选中鳍图标记为当前 FinID 的最佳 (BestInFin)
+            self.grid.right_clicked.connect(self._on_grid_menu)
+            sc = QShortcut(QKeySequence("B"), self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(self._mark_best_selected)
 
     def _move_to_group_index(self, idx):
         """Alt+N: 把网格中选中的图片移入侧边第 N 组 (与拖放同一条路径)。"""
@@ -1762,6 +1783,35 @@ class GroupedTab(QWidget):
         """只保留 BestInShot 标记的图; 无标记信息的图也保留。"""
         return [p for p in paths if self._best_mark(p) is not False]
 
+    def _on_grid_menu(self, pos):
+        """右键网格: 弹出 "标记最佳鳍" 菜单。"""
+        menu = QMenu(self)
+        act = menu.addAction("Mark Best Fin (B)")
+        act.setToolTip("把选中鳍图标记为当前 FinID 的最佳 "
+                       "(BestInFin=True, 同 FinID 其它鳍自动置 False)")
+        act.triggered.connect(self._mark_best_selected)
+        menu.exec_(pos)
+
+    def _mark_best_selected(self):
+        """把网格中选中的鳍图标记为该 FinID 的最佳并刷新标注。"""
+        if self._best_marker is None:
+            return
+        items = self.grid.selectedItems()
+        if not items:
+            return
+        paths = [it.data(Qt.UserRole) for it in items]
+        try:
+            changed = self._best_marker(paths)
+        except Exception as e:
+            QMessageBox.warning(self, "标记失败", str(e))
+            return
+        if not changed:
+            return
+        if self._on_moved is not None:
+            self._on_moved(self)  # 元数据已变, 刷新所有 tab 的标注
+        else:
+            self._on_group(None)
+
     def _on_clear_toggled(self, checked):
         """"Clear" 复选框: 勾选后 Review 模式只显示 clear==1 的清晰鳍图。"""
         self._clear_only = checked
@@ -1873,6 +1923,78 @@ class StatisticsTab(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard 页
+# ---------------------------------------------------------------------------
+class DashboardTab(QWidget):
+    """Dashboard 页: 处理流程入口 (布局参考 dashboard.ui)。
+
+    按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
+    其余按钮以子进程运行对应流水线脚本, 运行期间按钮禁用, 结束后恢复并提示。"""
+
+    root_changed = pyqtSignal(str)
+
+    STEPS = [
+        ("2.  Scan Images", "Step0_scan_image.py"),
+        ("3.  Locate Fin", "Step1_crop_fin.py"),
+        ("4.  Extract Fin Features", "Step3_extract_fin_feature.py"),
+        ("5.  Clustering", "Step4_sort_fin_automatic.py"),
+        ("6.  Export Database", "export_database.py"),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root = None
+        self._script_dir = os.path.dirname(os.path.abspath(__file__))
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
+        btn_root = QPushButton("1.  Set Root Folder")
+        btn_root.clicked.connect(self._pick_root)
+        grid.addWidget(btn_root, 0, 0)
+        self.root_label = QLabel("(未设置)")
+        self.root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        grid.addWidget(self.root_label, 0, 1)
+        for i, (text, script) in enumerate(self.STEPS, 1):
+            btn = QPushButton(text)
+            btn.clicked.connect(lambda _=False, s=script, b=btn:
+                                self._run_step(s, b))
+            grid.addWidget(btn, i, 0)
+        lay = QVBoxLayout(self)
+        lay.addLayout(grid)
+        lay.addStretch(1)
+
+    def set_root(self, root):
+        """主窗口加载/切换根目录后同步显示。"""
+        self._root = root
+        self.root_label.setText(root)
+
+    def _pick_root(self):
+        d = QFileDialog.getExistingDirectory(self, "选择 PHOTO 根目录")
+        if d:
+            self.root_changed.emit(d)
+
+    def _run_step(self, script, btn):
+        """以子进程运行流水线脚本 (带当前根目录), 完成后恢复按钮并提示。"""
+        if not self._root:
+            QMessageBox.warning(self, "Doris",
+                                "请先通过 \"1. Set Root Folder\" 设置根目录")
+            return
+        path = os.path.join(self._script_dir, script)
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "Doris", "找不到脚本: %s" % path)
+            return
+        btn.setEnabled(False)
+        proc = QProcess(self)
+        proc.finished.connect(
+            lambda code, _status, b=btn: self._step_finished(b, code))
+        proc.start(sys.executable, [path, self._root])
+
+    def _step_finished(self, btn, exit_code):
+        btn.setEnabled(True)
+        QMessageBox.information(self, "Doris", "%s 已结束 (exit code %d)"
+                                % (btn.text(), exit_code))
+
+
+# ---------------------------------------------------------------------------
 # 主窗口
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -1880,12 +2002,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Doris v0.2 — %s" % root)
         self.resize(1280, 800)
-
-        toolbar = QToolBar()
-        act = QAction("Open folder…", self)
-        act.triggered.connect(self._pick_folder)
-        toolbar.addAction(act)
-        self.addToolBar(toolbar)
 
         self.tabs = QTabWidget()
         # 切到统计页时惰性重算, 保证任何改组后看到的都是最新数据
@@ -1897,11 +2013,6 @@ class MainWindow(QMainWindow):
         if self._stats_tab is not None \
                 and self.tabs.widget(i) is self._stats_tab:
             self._refresh_stats()
-
-    def _pick_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "选择 PHOTO 根目录")
-        if d:
-            self.load(d)
 
     def closeEvent(self, event):
         # 退出前停掉所有缩略图加载线程, 否则线程在解释器退出时析构会段错误
@@ -1933,6 +2044,12 @@ class MainWindow(QMainWindow):
         self._stats_tab = None
         self.tabs.clear()
 
+        # 0. Dashboard 页: 处理流程入口 (参考 dashboard.ui); 选择根目录后重载
+        self._dashboard = DashboardTab()
+        self._dashboard.root_changed.connect(self.load)
+        self._dashboard.set_root(root)
+        self.tabs.addTab(self._dashboard, "Dashboard")
+
         # 1-4. 分组页 (支持拖拽改组: 只更新 dataframe 并写回 CSV, 不动文件)
         shot_boxes = ds.fin_boxes()  # Continuous Shots 页画鳍框
         fin_tabs = {"Fin Aspect", "Blur", "Fin ID"}  # 鳍图页: 中键查看原图, 叠加 shot_id
@@ -1955,6 +2072,7 @@ class MainWindow(QMainWindow):
                 on_moved=self._refresh_tabs,
                 best_mark=best_marks.__contains__ if title == "Fin ID" else None,
                 clear_mark=clear_marks.__contains__ if title == "Fin ID" else None,
+                best_marker=ds.mark_best_fins if title == "Fin ID" else None,
                 similar_provider=ds.similar_fins if title == "Fin ID" else None,
                 track_mover=ds.move_track_to_fin_id if title == "Fin ID" else None,
                 exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
@@ -1977,7 +2095,8 @@ class MainWindow(QMainWindow):
         # 5. 海豚配对页: 每只海豚一格, 上 DL 下 DR, DR 格可拖拽交换;
         #    "新建海豚"按钮创建空海豚供手工配对; 顶栏 "Mode" 图标按钮弹出菜单
         #    选择三个互斥模式: Overview=海豚格 (DR 可拖拽交换, 默认) /
-        #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图
+        #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图;
+        #    "Export PPT" 按钮把该总览导出为 PowerPoint (export_pptx.py)
         tab9 = QWidget()
         lay = QVBoxLayout(tab9)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -2009,6 +2128,12 @@ class MainWindow(QMainWindow):
         self._dolphin_mode_btn.setPopupMode(QToolButton.InstantPopup)
         self._dolphin_mode_btn.setMenu(menu)
         top.addWidget(self._dolphin_mode_btn)
+        # 导出当前配对总览 (与 Overview 模式同一份数据) 为 PPT
+        btn_ppt = QPushButton("Export PPT")
+        btn_ppt.setToolTip("把每只海豚的 DL/DR 代表鳍图导出为 PowerPoint\n"
+                           "(export_pptx.py, 需要 python-pptx)")
+        btn_ppt.clicked.connect(self._export_ppt)
+        top.addWidget(btn_ppt)
         top.addStretch(1)
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
@@ -2035,8 +2160,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._dolphin_stack)
         self.tabs.addTab(tab9, "Dolphin")
 
-        # 6. 社会结构页 (只读): 同一连拍出现多于一个个体 (不含 FinID_0) 的
-        #    shot 各成一组 (NN001...), 组内只收同一张原图含多个个体鳍的图,
+        # 6. 社会结构页 (只读): 整组连拍 (shot_id) 内出现多于一个 DolphinID
+        #    的 shot, 同一组 DolphinID 的多个 shot 合并为一组 (NN001...),
+        #    组内只收同一张原图含多个海豚鳍的图;
         #    组名写回 IMAGE/FIN_METAINFO.csv 的 SocialStructure 列;
         #    仿 Continuous Shots 页在原图上画鳍框, 标注 FinID 和 DolphinID
         #    (须排在 Dolphin 页后, ds.dolphins() 已分配 DolphinID 列)
@@ -2076,6 +2202,30 @@ class MainWindow(QMainWindow):
         else:  # overview
             self._dolphin_tab.show_dolphins(self.ds.dolphins())
             self._dolphin_stack.setCurrentWidget(self._dolphin_tab)
+
+    def _export_ppt(self):
+        """Dolphin 页: 把当前配对总览 (每海豚 DL/DR 代表鳍图) 导出为 PPT。"""
+        try:
+            from export_pptx import export_dolphin_pptx
+        except ImportError:
+            QMessageBox.warning(
+                self, "Doris", "导出 PPT 需要 python-pptx:\n"
+                "python3 -m pip install --user python-pptx")
+            return
+        out, _ = QFileDialog.getSaveFileName(
+            self, "导出 Dolphin Overview 到 PPT",
+            os.path.join(self.root, "EXPORT", "dolphin_overview.pptx"),
+            "PowerPoint (*.pptx)")
+        if not out:
+            return
+        try:
+            os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+            n = export_dolphin_pptx(self.ds.dolphins(), out)
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+            return
+        QMessageBox.information(self, "Doris",
+                                "已导出 %d 只海豚到:\n%s" % (n, out))
 
     def _match_assign(self, name, cls, fid):
         """Match Mode: 候选鳍拖入鳍格, 确认配对后刷新并保持当前海豚。"""

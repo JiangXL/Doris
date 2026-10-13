@@ -49,7 +49,7 @@ class Dataset:
         p = os.path.join(self.root, str(rows["orig_img_name"].iloc[0]))
         return p if os.path.isfile(p) else None
 
-    # 2. 连拍分组
+    #  连拍分组
     def shots(self):
         if self.image_df.empty:  # 无元数据时退化为单组
             return {"all": [os.path.join(self.root, n)
@@ -144,6 +144,29 @@ class Dataset:
         marks = df["BestInShot"].astype(str).str.lower().isin(("true", "1"))
         return set(df.loc[marks, "fullpath"].dropna())
 
+    def mark_best_fins(self, paths):
+        """把给定鳍图标记为 BestInFin=True (同一 FinID 的其它鳍自动置 False),
+        写回 FIN_METAINFO.csv (自动备份); 有改动返回 True。"""
+        df = self.fin_df
+        if df.empty or "FinID" not in df.columns:
+            return False
+        mask = df["fullpath"].isin(paths) if "fullpath" in df.columns \
+            else pd.Series(False, index=df.index)
+        if not mask.any() and "path" in df.columns:
+            names = {os.path.basename(p) for p in paths}
+            mask = df["path"].map(lambda p: os.path.basename(str(p)) in names)
+        if not mask.any():
+            return False
+        if "BestInFin" not in df.columns:
+            df["BestInFin"] = False
+        # 每个 FinID 只保留一个最佳: 先清掉被标记鳍同 FinID 其它鳍的标记
+        fids = set(df.loc[mask, "FinID"].dropna())
+        same = df["FinID"].isin(fids)
+        df.loc[same, "BestInFin"] = False
+        df.loc[mask, "BestInFin"] = True
+        self._save_csv(df, "FIN_METAINFO.csv")
+        return True
+
     def fin_clear_marks(self):
         """clear==1 (Clear) 的鳍图路径集合; 供 Review 页 "Clear" 筛选复选框。"""
         if self.fin_df.empty or "clear" not in self.fin_df.columns:
@@ -152,7 +175,7 @@ class Dataset:
         marks = df["clear"].astype(str).str.lower().isin(("true", "1"))
         return set(df.loc[marks, "fullpath"].dropna())
 
-    # 3. 部位分组
+    #  鳍侧分组
     def aspects(self):
         groups = {label: [] for label in ASPECT_LABELS.values()}  # 空组也列出, 作为拖放目标
         if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
@@ -163,7 +186,7 @@ class Dataset:
             groups.setdefault(label, []).extend(g["fullpath"])
         return groups
 
-    # 4. 模糊分组: 依据 fin_df["clear"] 列 (True=Clear, False=Blurd)
+    # 模糊分组: 依据 fin_df["clear"] 列 (True=Clear, False=Blurd)
     def blur(self):
         groups = {"Blur": [], "Clear": []}
         if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
@@ -173,7 +196,7 @@ class Dataset:
             groups[key].extend(g["fullpath"])
         return groups
 
-    # 5. 个体分组
+    #  鳍分组
     def fin_ids(self):
         groups = {}
         if self.fin_df.empty or "FinID" not in self.fin_df.columns:
@@ -185,59 +208,67 @@ class Dataset:
             groups["FinID_%s" % fid] = list(g["fullpath"])
         return groups
 
-    # 6. 社会结构: 同一连拍出现多于一个个体 (不含 FinID_0) 的 shot 各成一组,
-    #    组名 NN001...; 组内只收同一张原图含多个个体鳍的图;
+    # 社会结构: 整组连拍 (按 shot_id) 内出现多于一个 DolphinID 的 shot, 若多个
+    #    shot 出现同一组 DolphinID (集合完全相同) 则并入同一 NN 组;
+    #    组名 NN001...; 组内只收同一张原图含多个 DolphinID 鳍的图;
     #    组名写回 IMAGE/FIN_METAINFO.csv 的 SocialStructure 列
+    #    (须在 ds.dolphins() 分配 DolphinID 列之后调用)
     def social(self):
-        # fin 文件名 -> FinID 组名 (排除未分类的 FinID_0)
-        fin_to_id = {}
-        for fid, imgs in self.fin_ids().items():
-            try:
-                if float(str(fid).split("_", 1)[1]) == 0:
-                    continue
-            except (IndexError, ValueError):
-                pass
-            for p in imgs:
-                fin_to_id[os.path.basename(p)] = fid
-        if not fin_to_id:
-            self._save_social({})  # 无个体时清空已保存的 SocialStructure 列
+        df = self.fin_df
+        if df.empty or "DolphinID" not in df.columns \
+                or "orig_img_name" not in df.columns \
+                or "shot_id" not in df.columns:
+            self._save_social({})  # 无海豚配对时清空已保存的 SocialStructure 列
             return {}
-        # shot_id -> FinID 集合
-        df = self.fin_df.copy()
-        df["fin_name"] = df["path"].map(lambda p: os.path.basename(str(p)))
-        df["fin_id"] = df["fin_name"].map(fin_to_id)
-        shot_to_ids = df.dropna(subset=["fin_id"]).groupby("shot_id")["fin_id"] \
-            .agg(set)
+        sub = df.dropna(subset=["DolphinID", "orig_img_name", "shot_id"])
+
+        def shot_num(sid):
+            try:
+                return float(sid)
+            except (TypeError, ValueError):
+                return float("inf")
+
+        # shot_id -> 整组连拍内出现的 DolphinID 集合 (只留多海豚的连拍)
+        members = {}  # shot_id -> set(DolphinID)
+        for sid, g in sub.groupby("shot_id"):
+            ids = set(g["DolphinID"].astype(str))
+            if len(ids) >= 2:
+                members[sid] = ids
+        if not members:
+            self._save_social({})
+            return {}
+        # 同一 DolphinID 集合的多个连拍并入同一 NN 组
+        by_ids = {}  # frozenset(DolphinID) -> [shot_id]
+        for sid, ids in members.items():
+            by_ids.setdefault(frozenset(ids), []).append(sid)
+        # 组排序: DolphinID 数降序, 同数按最小 shot_id 升序
+        def group_key(item):
+            ids, sids = item
+            return (-len(ids), min(shot_num(s) for s in sids))
+
         groups = {}
         self.social_tooltips = {}
-        n_groups = 0
         img_group = {}  # orig_img_name -> NN 组名
-        # 只保留多于一个个体共现的连拍; 按成员数降序, 同数按 shot_id 升序
-        def sort_key(kv):
-            sid, ids = kv
-            try:
-                num = float(sid)
-            except (TypeError, ValueError):
-                num = float("inf")
-            return (-len(ids), num)
-
-        for sid, ids in sorted(shot_to_ids.items(), key=sort_key):
-            if len(ids) < 2:
-                continue
-            # 只保留同一张原图里含多个个体鳍的图 (整 shot 的其它帧不进组)
-            sub = df[df["shot_id"] == sid].dropna(subset=["fin_id"])
-            per_img = sub.groupby("orig_img_name")["fin_id"].nunique()
-            multi = sorted(per_img[per_img >= 2].index)
-            if not multi:
-                continue
-            n_groups += 1
-            name = "NN%03d" % n_groups
-            try:  # shot_id 常被读成浮点, 显示为整数
-                sid_disp = int(float(sid))
-            except (ValueError, TypeError):
-                sid_disp = sid
-            self.social_tooltips[name] = "shot_%s 成员: %s" % (
-                sid_disp, ",".join(sorted(ids)))
+        formed = []  # (DolphinID 集合, shot 列表, 组内原图)
+        for ids, sids in sorted(by_ids.items(), key=group_key):
+            # 组内仍只收同一张原图里含多个海豚 (>=2 个 DolphinID) 鳍的图
+            multi = []
+            for sid in sorted(sids, key=shot_num):
+                g = sub[sub["shot_id"] == sid]
+                per_img = g.groupby("orig_img_name")["DolphinID"].nunique()
+                multi.extend(per_img[per_img >= 2].index)
+            if multi:
+                formed.append((ids, sids, multi))
+        for n, (ids, sids, multi) in enumerate(formed, 1):
+            name = "NN%03d" % n
+            sid_disp = []
+            for s in sorted(sids, key=shot_num):  # shot_id 常读成浮点, 显示整数
+                try:
+                    sid_disp.append(str(int(float(s))))
+                except (ValueError, TypeError):
+                    sid_disp.append(str(s))
+            self.social_tooltips[name] = "shots %s 海豚: %s" % (
+                ",".join(sid_disp), ",".join(sorted(ids)))
             img_group.update({o: name for o in multi})
             groups[name] = [os.path.join(self.root, o) for o in multi
                             if os.path.isfile(os.path.join(self.root, o))]
@@ -328,7 +359,7 @@ class Dataset:
                 int(ofid) if float(ofid).is_integer() else ofid, best[j])
         return paths, labels
 
-    # 7. FinID 总览: 每个个体一张代表鳍图 (最清晰的)
+    #  FinID 总览: 每个个体一张代表鳍图 (最清晰的)
     def fin_id_previews(self):
         """返回 (paths, labels): 每个 FinID 一张代表图 + 'FinID_x (n)' 角标。
         代表图优先取 BestInShot 标记中 clearness 最高的一张 (与 Dolphin 页同规则)。"""
@@ -354,7 +385,7 @@ class Dataset:
             labels[p] = "FinID_%s (%d)" % (fid, n)
         return paths, labels
 
-    # 8. 统计: FinID 鳍图数分布 / 部位占比
+    #  统计: FinID 鳍图数分布 / 部位占比
     def fin_id_counts(self):
         """[(label, count)]: 每个 FinID 的鳍图数, 按数量降序 (同数按编号升序);
         不含 FinID_0 (未分类, 非真实个体)。"""

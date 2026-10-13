@@ -37,7 +37,7 @@ class FinCropper:
         # initilize DataFrame
         self.fin_info = pd.DataFrame(
             columns=[
-                "identity", "path", "class", "crop_conf", "x_min",
+                "identity", "path", "Aspect", "crop_conf", "x_min",
                 "x_max", "y_min", "y_max",
             ]
         )
@@ -84,7 +84,7 @@ class FinCropper:
                     "orig_img_w": orig_img_w,
                     "orig_img_h": orig_img_h,
                     "path": f"FIN/{fin_name}",
-                    "class": fin_class_name,
+                    "Aspect": fin_class_name,
                     "crop_conf": conf,
                     "x_min": x0,
                     "x_max": x1,
