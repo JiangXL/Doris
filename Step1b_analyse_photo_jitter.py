@@ -26,58 +26,59 @@ from tqdm import tqdm
 class BurstJitterAnalyzer:
     """连拍序列帧间抖动分析器"""
 
-    def __init__(self, root_dir, max_dim=1000):
+    def __init__(self, max_dim=1000):
         """
         Args:
-            root_dir: 图像集根目录（含 METAINFO/IMAGE_METAINFO.csv）
+            root_dir: 图像集根目录（含 METAINFO/PHOTO_METAINFO.csv）
             max_dim: 估计运动时降采样后的最长边像素数
         """
-        self.root_dir = root_dir
+        self.root_dir = ""
         self.max_dim = max_dim
-        self.meta_path = os.path.join(root_dir, "METAINFO", "IMAGE_METAINFO.csv")
+        self.meta_path = "" 
         self.metainfo = None
 
         self.ecc_criteria = (
             cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 1e-5)
 
-    def load_metainfo(self, drop_old_results=True):
-        """加载 IMAGE_METAINFO.csv
+    def load_metainfo(self, root_dir, drop_old_results=True):
+        """加载 PHOTO_METAINFO.csv
 
         Args:
             drop_old_results: 重新计算时丢弃上次运行的旧抖动列；
                 仅画图（--plot）时保留
         """
+        self.meta_path = os.path.join(root_dir, "METAINFO", "PHOTO_METAINFO.csv")
         self.metainfo = pd.read_csv(self.meta_path)
         if drop_old_results:
             jitter_cols = [c for c in self.metainfo.columns
                            if c.split("_")[0] in ("pc", "ecc")]
             self.metainfo = self.metainfo.drop(columns=jitter_cols)
 
-    def _load_gray(self, img_name):
+    def _load_gray(self, photo_name):
         """读取图像并降采样为灰度图，返回 (gray, scale)"""
-        img = cv2.imread(os.path.join(self.root_dir, img_name),
+        photo = cv2.imread(os.path.join(self.root_dir, photo_name),
                          cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            raise IOError("无法读取图像: %s" % img_name)
-        scale = self.max_dim / max(img.shape)
+        if photo is None:
+            raise IOError("无法读取图像: %s" % photo_name)
+        scale = self.max_dim / max(photo.shape)
         if scale < 1.0:
-            img = cv2.resize(img, None, fx=scale, fy=scale)
+            photo = cv2.resize(photo, None, fx=scale, fy=scale)
         else:
             scale = 1.0
-        return img, scale
+        return photo, scale
 
-    def _load_frame(self, img_name):
+    def _load_frame(self, photo_name):
         """读取并预处理单帧（供预取线程调用，cv2 解码释放 GIL）
 
-        返回 (img_name, frame_dict)，frame_dict 含灰度图、float32 副本、
+        返回 (photo_name, frame_dict)，frame_dict 含灰度图、float32 副本、
         Hanning 窗和分辨率换算系数。
         """
-        gray, scale = self._load_gray(img_name)
+        gray, scale = self._load_gray(photo_name)
         f32 = np.float32(gray)
         win = cv2.createHanningWindow(f32.shape[::-1], cv2.CV_32F)
-        frame = {"name": img_name, "gray": gray, "float": f32,
+        frame = {"name": photo_name, "gray": gray, "float": f32,
                  "win": win, "inv_scale": 1.0 / scale}
-        return img_name, frame
+        return photo_name, frame
 
     # ---- 方法 1：相位相关 ----
     def _phase_correlate(self, prev_f, curr_f, win):
@@ -120,11 +121,10 @@ class BurstJitterAnalyzer:
                        ecc_jitter=float(np.hypot(dx, dy)) * s)
         return row
 
-    def analyze(self, decode_workers=8, analysis_workers=8,
-                prefetch_frames=16, inflight_pairs=16):
+    def analyze(self, decode_workers=2, analysis_workers=2,
+                prefetch_frames=8, inflight_pairs=4):
         """按 shot_id 分组、按时间排序，逐对估计帧间抖动（并行加速）
 
-        参考 Step1_crop_fin.py 的预取模式：
         - 解码线程池：预取窗口内的帧在后台并行解码+预处理
           （cv2.imread/resize 释放 GIL，多线程有效）
         - 分析线程池：相位相关/ECC 均为 OpenCV C++ 实现、释放 GIL，
@@ -137,11 +137,11 @@ class BurstJitterAnalyzer:
             inflight_pairs: 最多同时在飞的分析任务数，限制内存占用
         """
         df = self.metainfo
-        ts = pd.to_datetime(df["datetimesec"].str.strip(),
+        ts = pd.to_datetime(df["Datetimesec"].str.strip(),
                             format="%Y:%m:%d %H:%M:%S.%f")
-        order = df.assign(_ts=ts).sort_values(["shot_id", "_ts"])
-        names = order["orig_img_name"].tolist()
-        shots = order["shot_id"].tolist()
+        order = df.assign(_ts=ts).sort_values(["ShotID", "_ts"])
+        names = order["PhotoName"].tolist()
+        shots = order["ShotID"].tolist()
         # 同 shot 内的相邻帧对（按全局顺序处理，保证预取窗口滑动有效）
         pairs = [(i - 1, i) for i in range(1, len(names))
                  if shots[i] == shots[i - 1]]
@@ -153,7 +153,7 @@ class BurstJitterAnalyzer:
             analysis_futs = deque()  # (curr_name, Future(分析结果))
             next_submit = 0      # 下一个待预取的帧下标
 
-            for i_prev, i_curr in tqdm(pairs, desc="Analyzing pairs"):
+            for i_prev, i_curr in tqdm(pairs, desc="Analyzing pairs' jitter"):
                 # 补充预取窗口：当前对之后的 prefetch_frames 帧在后台解码
                 while next_submit <= min(i_curr + prefetch_frames,
                                          len(names) - 1):
@@ -181,16 +181,20 @@ class BurstJitterAnalyzer:
 
         result_df = pd.DataFrame(results).T
         self.metainfo = df.merge(
-            result_df, left_on="orig_img_name", right_index=True, how="left")
+            result_df, left_on="PhotoName", right_index=True, how="left")
 
     def save(self):
         self.metainfo.to_csv(self.meta_path, index=False)
-        print("结果已追加到 %s" % self.meta_path)
+        print("Append jitter result to %s" % self.meta_path)
 
-    def run(self, analyze=True):
-        self.load_metainfo(drop_old_results=analyze)
+    def run(self, root_dir, analyze=True):
+        self.root_dir = root_dir
+        self.load_metainfo(self.root_dir, drop_old_results=analyze)
+        cpu_num = os.cpu_count()
         if analyze:
-            self.analyze()
+            self.analyze(decode_workers=int(cpu_num*0.5), 
+                analysis_workers=int(cpu_num*0.5),
+                prefetch_frames=int(cpu_num*2), inflight_pairs=cpu_num)
             self.save()
 
 if __name__ == "__main__":
@@ -201,5 +205,5 @@ if __name__ == "__main__":
     else:
         print("用法: python3 Step1b_burst_jitter.py <root_dir> [--plot]")
         sys.exit(1)
-    analyzer = BurstJitterAnalyzer(root_dir=root_dir)
-    analyzer.run(analyze=analyze)
+    analyzer = BurstJitterAnalyzer()
+    analyzer.run(root_dir, analyze=analyze)

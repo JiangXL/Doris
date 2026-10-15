@@ -6,7 +6,7 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
 8 个标签页:
   0. Dashboard (处理流程入口: 设置根目录 / 扫描原图 / 切鳍 / 提特征 /
      聚类 / 导出数据库, 布局参考 dashboard.ui)
-  1. 按连拍分组 (Continuous Shots, IMAGE_METAINFO.csv 的 shot_id)
+  1. 按连拍分组 (Continuous Shots, PHOTO_METAINFO.csv 的 shot_id)
   2. 按鳍部位分组 (Fin Aspect: DL=Left / DR=Right / Others=Misc / Wrong=0 )
   3. 按模糊与否分组 (Blur / Clear / Mid, 依据 FIN_METAINFO.csv 的 clear 列)
   4. 按个体编号分组 (Fin ID, FIN_METAINFO.csv 的 FinID 列; 顶栏三个互斥模式:
@@ -41,8 +41,9 @@ from PyQt5.QtWidgets import (
     QGraphicsView, QGraphicsScene, QStyledItemDelegate, QStyle,
     QStyleOptionViewItem, QShortcut, QHBoxLayout, QPushButton,
     QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox, QGridLayout,
+    QPlainTextEdit,
 )
-from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter, QBrush, QColor, QDrag, QPen, QPalette, QKeySequence
+from PyQt5.QtGui import QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter, QBrush, QColor, QDrag, QPen, QPalette, QKeySequence, QFont
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF, QTimer, QProcess
 import PyQt5
 
@@ -1929,16 +1930,19 @@ class DashboardTab(QWidget):
     """Dashboard 页: 处理流程入口 (布局参考 dashboard.ui)。
 
     按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
-    其余按钮以子进程运行对应流水线脚本, 运行期间按钮禁用, 结束后恢复并提示。"""
+    其余按钮以子进程运行对应流水线脚本 (扫描 / 切鳍 / 提特征 / 聚类 /
+    导出数据库 / 导出 Dolphin Overview PPT), 运行期间按钮禁用, 结束后恢复并提示。"""
 
     root_changed = pyqtSignal(str)
 
     STEPS = [
-        ("2.  Scan Images", "Step0_scan_image.py"),
-        ("3.  Locate Fin", "Step1_crop_fin.py"),
-        ("4.  Extract Fin Features", "Step3_extract_fin_feature.py"),
-        ("5.  Clustering", "Step4_sort_fin_automatic.py"),
-        ("6.  Export Database", "export_database.py"),
+        # (按钮文字, 脚本文件名, 是否需要先弹出保存对话框)
+        ("2. Scan Photos", "Step1_scan_photo.py", False),
+        ("3. Locate Fin", "Step2_locate_fin.py", False),
+        ("4. Extract Fin Features", "Step3_extract_fin_feature.py", False),
+        ("5. Clustering", "Step4_sort_fin_automatic.py", False),
+        ("6. Export Database", "export_database.py", False),
+        ("7. Export Dolphin Overview PPT", "export_pptx.py", True),
     ]
 
     def __init__(self, parent=None):
@@ -1953,27 +1957,134 @@ class DashboardTab(QWidget):
         self.root_label = QLabel("(未设置)")
         self.root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         grid.addWidget(self.root_label, 0, 1)
-        for i, (text, script) in enumerate(self.STEPS, 1):
+        for i, (text, script, save_dialog) in enumerate(self.STEPS, 1):
             btn = QPushButton(text)
-            btn.clicked.connect(lambda _=False, s=script, b=btn:
-                                self._run_step(s, b))
+            if save_dialog:
+                btn.clicked.connect(lambda _=False, s=script, b=btn:
+                                    self._run_step_with_save_dialog(s, b))
+            else:
+                btn.clicked.connect(lambda _=False, s=script, b=btn:
+                                    self._run_step(s, b))
             grid.addWidget(btn, i, 0)
+            if i == 1:  # Scan Images 右侧显示 PHOTO_METAINFO 状态
+                self._scan_status = QLabel()
+                grid.addWidget(self._scan_status, i, 1)
+            if i == 2:  # Locate Fin 右侧显示 FIN_METAINFO 状态
+                self._fin_status = QLabel()
+                grid.addWidget(self._fin_status, i, 1)
+            if i == 3:  # Extract Fin Features 右侧显示 FIN_DEEPFEATURES 状态
+                self._feature_status = QLabel()
+                grid.addWidget(self._feature_status, i, 1)
+        # 底部终端式日志: 显示各 QProcess 的 stdout/stderr
+        self._log = QPlainTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setFont(QFont("Consolas", 9))
+        self._log.setStyleSheet(
+            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
+            "border: 1px solid #3c3c3c; }")
+        self._log.setMaximumBlockCount(500)
+        self._log.setPlaceholderText("子进程输出将显示在这里...")
         lay = QVBoxLayout(self)
         lay.addLayout(grid)
-        lay.addStretch(1)
+        lay.addWidget(self._log, stretch=1)
+        lay.setStretchFactor(self._log, 1)
 
     def set_root(self, root):
-        """主窗口加载/切换根目录后同步显示。"""
+        """主窗口加载/切换根目录后同步显示; 同时刷新各步骤状态标签。"""
         self._root = root
         self.root_label.setText(root)
+        self._update_scan_status()
+        self._update_fin_status()
+        self._update_feature_status()
 
     def _pick_root(self):
         d = QFileDialog.getExistingDirectory(self, "选择 PHOTO 根目录")
         if d:
             self.root_changed.emit(d)
 
+    def _update_scan_status(self):
+        """Scan Images 按钮右侧: 显示 PHOTO_METAINFO.csv 是否存在及图片数量。"""
+        if not self._root or not hasattr(self, "_scan_status"):
+            return
+        csv = os.path.join(self._root, "METAINFO", "PHOTO_METAINFO.csv")
+        if not os.path.isfile(csv):
+            self._scan_status.setText("Wait to Scan")
+            self._scan_status.setStyleSheet("color: #d9534f;")
+            return
+        try:
+            import pandas as pd
+            n = len(pd.read_csv(csv))
+            self._scan_status.setText(
+                "METAINFO/PHOTO_METAINFO.csv found, %d photos" % n)
+            self._scan_status.setStyleSheet("color: #5cb85c;")
+        except Exception:
+            self._scan_status.setText("METAINFO/PHOTO_METAINFO.csv found")
+            self._scan_status.setStyleSheet("color: #5cb85c;")
+
+    def _update_fin_status(self):
+        """Locate Fin 按钮右侧: 显示 FIN_METAINFO.csv 是否存在及鳍图数量。"""
+        if not self._root or not hasattr(self, "_fin_status"):
+            return
+        csv = os.path.join(self._root, "METAINFO", "FIN_METAINFO.csv")
+        if not os.path.isfile(csv):
+            self._fin_status.setText("Wait to Locate")
+            self._fin_status.setStyleSheet("color: #d9534f;")
+            return
+        try:
+            import pandas as pd
+            n = len(pd.read_csv(csv))
+            self._fin_status.setText(
+                "METAINFO/FIN_METAINFO.csv found, %d fin images" % n)
+            self._fin_status.setStyleSheet("color: #5cb85c;")
+        except Exception:
+            self._fin_status.setText("METAINFO/FIN_METAINFO.csv found")
+            self._fin_status.setStyleSheet("color: #5cb85c;")
+
+    def _update_feature_status(self):
+        """Extract Fin Features 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
+        if not self._root or not hasattr(self, "_feature_status"):
+            return
+        feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES")
+        if not os.path.exists(feat):
+            self._feature_status.setText("Wait to Extract")
+            self._feature_status.setStyleSheet("color: #d9534f;")
+            return
+        self._feature_status.setText("METAINFO/FIN_DEEPFEATURES found")
+        self._feature_status.setStyleSheet("color: #5cb85c;")
+
     def _run_step(self, script, btn):
         """以子进程运行流水线脚本 (带当前根目录), 完成后恢复按钮并提示。"""
+        self._start_step(script, btn, [self._root])
+
+    def _run_step_with_save_dialog(self, script, btn):
+        """弹出保存对话框并把选中的路径作为额外参数传给脚本。"""
+        if not self._root:
+            QMessageBox.warning(self, "Doris",
+                                "请先通过 \"1. Set Root Folder\" 设置根目录")
+            return
+        default = os.path.join(self._root, "EXPORT", "dolphin_overview.pptx")
+        out, _ = QFileDialog.getSaveFileName(
+            self, "导出 Dolphin Overview 到 PPT", default,
+            "PowerPoint (*.pptx)")
+        if not out:
+            return
+        self._start_step(script, btn, [self._root, out])
+
+    def _append_log(self, text, color=None):
+        """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。"""
+        if not text:
+            return
+        from datetime import datetime
+        for line in text.rstrip("\n").split("\n"):
+            stamp = datetime.now().strftime("%H:%M:%S")
+            if color:
+                self._log.appendHtml('<span style="color:%s">[%s] %s</span>'
+                                     % (color, stamp, line))
+            else:
+                self._log.appendPlainText("[%s] %s" % (stamp, line))
+
+    def _start_step(self, script, btn, args):
+        """启动 QProcess 运行脚本, args 为传给脚本的参数列表。"""
         if not self._root:
             QMessageBox.warning(self, "Doris",
                                 "请先通过 \"1. Set Root Folder\" 设置根目录")
@@ -1982,14 +2093,46 @@ class DashboardTab(QWidget):
         if not os.path.isfile(path):
             QMessageBox.warning(self, "Doris", "找不到脚本: %s" % path)
             return
+        self._append_log(
+            "启动 %s: %s %s" % (btn.text(), sys.executable,
+                               " ".join([path] + args)))
         btn.setEnabled(False)
+        self._set_status_running(btn.text())
         proc = QProcess(self)
+        proc.readyReadStandardOutput.connect(
+            lambda: self._append_log(
+                bytes(proc.readAllStandardOutput()).decode(
+                    "utf-8", errors="replace")))
+        proc.readyReadStandardError.connect(
+            lambda: self._append_log(
+                bytes(proc.readAllStandardError()).decode(
+                    "utf-8", errors="replace"), color="#ff6b6b"))
         proc.finished.connect(
             lambda code, _status, b=btn: self._step_finished(b, code))
-        proc.start(sys.executable, [path, self._root])
+        proc.start(sys.executable, [path] + args)
+
+    def _set_status_running(self, btn_text):
+        """根据正在运行的步骤, 把右侧状态标签设为 Scanning/Locating/Extracting。"""
+        if "Scan Images" in btn_text:
+            self._scan_status.setText("Scanning")
+            self._scan_status.setStyleSheet("color: #f0ad4e;")
+        elif "Locate Fin" in btn_text:
+            self._fin_status.setText("Locating")
+            self._fin_status.setStyleSheet("color: #f0ad4e;")
+        elif "Extract Fin Features" in btn_text:
+            self._feature_status.setText("Extracting")
+            self._feature_status.setStyleSheet("color: #f0ad4e;")
 
     def _step_finished(self, btn, exit_code):
         btn.setEnabled(True)
+        if "Scan Images" in btn.text():
+            self._update_scan_status()
+        if "Locate Fin" in btn.text():
+            self._update_fin_status()
+        if "Extract Fin Features" in btn.text():
+            self._update_feature_status()
+        self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
+                         color="#5bc0de" if exit_code == 0 else "#ff6b6b")
         QMessageBox.information(self, "Doris", "%s 已结束 (exit code %d)"
                                 % (btn.text(), exit_code))
 
@@ -2037,8 +2180,15 @@ class MainWindow(QMainWindow):
 
     def load(self, root):
         self.root = root
-        ds = Dataset(root)
-        self.ds = ds
+        required = [
+            ("PHOTO_METAINFO.csv",
+             os.path.join(root, "METAINFO", "PHOTO_METAINFO.csv")),
+            ("FIN_METAINFO.csv",
+             os.path.join(root, "METAINFO", "FIN_METAINFO.csv")),
+            ("FIN_DEEPFEATURES",
+             os.path.join(root, "METAINFO", "FIN_DEEPFEATURES")),
+        ]
+        missing = [name for name, path in required if not os.path.exists(path)]
         self._group_tabs = []
         self._dolphin_tab = None
         self._stats_tab = None
@@ -2049,6 +2199,12 @@ class MainWindow(QMainWindow):
         self._dashboard.root_changed.connect(self.load)
         self._dashboard.set_root(root)
         self.tabs.addTab(self._dashboard, "Dashboard")
+        if missing:
+            self.ds = None
+            return
+
+        ds = Dataset(root)
+        self.ds = ds
 
         # 1-4. 分组页 (支持拖拽改组: 只更新 dataframe 并写回 CSV, 不动文件)
         shot_boxes = ds.fin_boxes()  # Continuous Shots 页画鳍框
@@ -2095,8 +2251,7 @@ class MainWindow(QMainWindow):
         # 5. 海豚配对页: 每只海豚一格, 上 DL 下 DR, DR 格可拖拽交换;
         #    "新建海豚"按钮创建空海豚供手工配对; 顶栏 "Mode" 图标按钮弹出菜单
         #    选择三个互斥模式: Overview=海豚格 (DR 可拖拽交换, 默认) /
-        #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图;
-        #    "Export PPT" 按钮把该总览导出为 PowerPoint (export_pptx.py)
+        #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图
         tab9 = QWidget()
         lay = QVBoxLayout(tab9)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -2128,12 +2283,6 @@ class MainWindow(QMainWindow):
         self._dolphin_mode_btn.setPopupMode(QToolButton.InstantPopup)
         self._dolphin_mode_btn.setMenu(menu)
         top.addWidget(self._dolphin_mode_btn)
-        # 导出当前配对总览 (与 Overview 模式同一份数据) 为 PPT
-        btn_ppt = QPushButton("Export PPT")
-        btn_ppt.setToolTip("把每只海豚的 DL/DR 代表鳍图导出为 PowerPoint\n"
-                           "(export_pptx.py, 需要 python-pptx)")
-        btn_ppt.clicked.connect(self._export_ppt)
-        top.addWidget(btn_ppt)
         top.addStretch(1)
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
@@ -2202,30 +2351,6 @@ class MainWindow(QMainWindow):
         else:  # overview
             self._dolphin_tab.show_dolphins(self.ds.dolphins())
             self._dolphin_stack.setCurrentWidget(self._dolphin_tab)
-
-    def _export_ppt(self):
-        """Dolphin 页: 把当前配对总览 (每海豚 DL/DR 代表鳍图) 导出为 PPT。"""
-        try:
-            from export_pptx import export_dolphin_pptx
-        except ImportError:
-            QMessageBox.warning(
-                self, "Doris", "导出 PPT 需要 python-pptx:\n"
-                "python3 -m pip install --user python-pptx")
-            return
-        out, _ = QFileDialog.getSaveFileName(
-            self, "导出 Dolphin Overview 到 PPT",
-            os.path.join(self.root, "EXPORT", "dolphin_overview.pptx"),
-            "PowerPoint (*.pptx)")
-        if not out:
-            return
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-            n = export_dolphin_pptx(self.ds.dolphins(), out)
-        except Exception as e:
-            QMessageBox.warning(self, "导出失败", str(e))
-            return
-        QMessageBox.information(self, "Doris",
-                                "已导出 %d 只海豚到:\n%s" % (n, out))
 
     def _match_assign(self, name, cls, fid):
         """Match Mode: 候选鳍拖入鳍格, 确认配对后刷新并保持当前海豚。"""
