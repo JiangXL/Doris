@@ -3,7 +3,7 @@
 """
 doris_dataset — Doris 的数据层 (pandas / numpy)
 
-从 root 目录的 METAINFO 子目录加载元数据 (IMAGE_METAINFO.csv / FIN_METAINFO.csv),
+从 root 目录的 METAINFO 子目录加载元数据 (PHOTO_METAINFO.csv / FIN_METAINFO.csv),
 计算各类分组 (全图 / 连拍 / 部位 / 模糊 / 个体 / 社会结构 / FinID 总览 / 海豚配对),
 并在拖拽改组时把改动写回 CSV (自动备份) 或 FIN_SIMILARITY.npy。
 
@@ -27,7 +27,7 @@ class Dataset:
     def __init__(self, root):
         self.root = root
         self.meta_dir = os.path.join(self.root, "METAINFO")
-        self.image_df = self._load_meta("IMAGE_METAINFO.csv")
+        self.photo_df = self._load_meta("PHOTO_METAINFO.csv")
         self.fin_df = self._load_meta("FIN_METAINFO.csv")
         if not self.fin_df.empty:
             self.fin_df["fullpath"] = self.root + "/" + self.fin_df["path"]
@@ -41,23 +41,23 @@ class Dataset:
 
     def orig_of_fin(self, fin_path):
         """鳍裁剪图路径 -> 原始全图路径 (找不到返回 None)。"""
-        if self.fin_df.empty or "orig_img_name" not in self.fin_df.columns:
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
             return None
         rows = self.fin_df[self.fin_df["fullpath"] == fin_path]
         if rows.empty:
             return None
-        p = os.path.join(self.root, str(rows["orig_img_name"].iloc[0]))
+        p = os.path.join(self.root, str(rows["PhotoName"].iloc[0]))
         return p if os.path.isfile(p) else None
 
     #  连拍分组
     def shots(self):
-        if self.image_df.empty:  # 无元数据时退化为单组
+        if self.photo_df.empty:  # 无元数据时退化为单组
             return {"all": [os.path.join(self.root, n)
-                            for n in self.image_df["orig_img_name"]]}
+                            for n in self.photo_df["PhotoName"]]}
         groups = {}
-        for sid, g in self.image_df.groupby("shot_id", sort=True):
+        for sid, g in self.photo_df.groupby("ShotID", sort=True):
             groups["shot_%s" % sid] = [os.path.join(self.root, n)
-                                       for n in g["orig_img_name"]]
+                                       for n in g["PhotoName"]]
         return groups
 
     def fin_boxes(self, dolphin_id=False):
@@ -66,7 +66,7 @@ class Dataset:
         dolphin_id=True 时追加 DolphinID ('Dph001', 仅 DL/DR 鳍有),
         且不再标注 p=/c= 和部位文字 (cls 加 '_' 前缀, 只保留框颜色)。"""
         boxes = {}
-        if self.fin_df.empty or "orig_img_name" not in self.fin_df.columns:
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
             return boxes
         need = ["x_min", "y_min", "x_max", "y_max"]
         if not all(c in self.fin_df.columns for c in need):
@@ -90,7 +90,7 @@ class Dataset:
                 parts.append("c=%.2f" % float(cle))
             return " ".join(parts) or None
 
-        for name, g in self.fin_df.groupby("orig_img_name"):
+        for name, g in self.fin_df.groupby("PhotoName"):
             p = os.path.join(self.root, str(name))
             if not os.path.isfile(p):
                 continue
@@ -112,17 +112,17 @@ class Dataset:
         """鳍图 -> 'shot_<id> clr=<clearness> conf=<crop_conf>' 叠加标签。
         同时按绝对路径和文件名两种键收录, 以覆盖 FIN/FinIDxxx 里的副本。"""
         labels = {}
-        if self.fin_df.empty or "shot_id" not in self.fin_df.columns:
+        if self.fin_df.empty or "ShotID" not in self.fin_df.columns:
             return labels
         has_cle = "clearness" in self.fin_df.columns
         has_conf = "crop_conf" in self.fin_df.columns
         cles = self.fin_df["clearness"] if has_cle else [float("nan")] * len(self.fin_df)
         confs = self.fin_df["crop_conf"] if has_conf else [float("nan")] * len(self.fin_df)
         for p, sid, cle, conf in zip(self.fin_df["fullpath"],
-                                     self.fin_df["shot_id"], cles, confs):
+                                     self.fin_df["ShotID"], cles, confs):
             if pd.isna(sid):
                 continue
-            try:  # shot_id 常被读成浮点, 显示为整数
+            try:  # ShotID 常被读成浮点, 显示为整数
                 sid = int(float(sid))
             except (ValueError, TypeError):
                 pass
@@ -208,7 +208,7 @@ class Dataset:
             groups["FinID_%s" % fid] = list(g["fullpath"])
         return groups
 
-    # 社会结构: 整组连拍 (按 shot_id) 内出现多于一个 DolphinID 的 shot, 若多个
+    # 社会结构: 整组连拍 (按 ShotID) 内出现多于一个 DolphinID 的 shot, 若多个
     #    shot 出现同一组 DolphinID (集合完全相同) 则并入同一 NN 组;
     #    组名 NN001...; 组内只收同一张原图含多个 DolphinID 鳍的图;
     #    组名写回 IMAGE/FIN_METAINFO.csv 的 SocialStructure 列
@@ -216,11 +216,11 @@ class Dataset:
     def social(self):
         df = self.fin_df
         if df.empty or "DolphinID" not in df.columns \
-                or "orig_img_name" not in df.columns \
-                or "shot_id" not in df.columns:
+                or "PhotoName" not in df.columns \
+                or "ShotID" not in df.columns:
             self._save_social({})  # 无海豚配对时清空已保存的 SocialStructure 列
             return {}
-        sub = df.dropna(subset=["DolphinID", "orig_img_name", "shot_id"])
+        sub = df.dropna(subset=["DolphinID", "PhotoName", "ShotID"])
 
         def shot_num(sid):
             try:
@@ -228,9 +228,9 @@ class Dataset:
             except (TypeError, ValueError):
                 return float("inf")
 
-        # shot_id -> 整组连拍内出现的 DolphinID 集合 (只留多海豚的连拍)
-        members = {}  # shot_id -> set(DolphinID)
-        for sid, g in sub.groupby("shot_id"):
+        # ShotID -> 整组连拍内出现的 DolphinID 集合 (只留多海豚的连拍)
+        members = {}  # ShotID -> set(DolphinID)
+        for sid, g in sub.groupby("ShotID"):
             ids = set(g["DolphinID"].astype(str))
             if len(ids) >= 2:
                 members[sid] = ids
@@ -238,31 +238,31 @@ class Dataset:
             self._save_social({})
             return {}
         # 同一 DolphinID 集合的多个连拍并入同一 NN 组
-        by_ids = {}  # frozenset(DolphinID) -> [shot_id]
+        by_ids = {}  # frozenset(DolphinID) -> [ShotID]
         for sid, ids in members.items():
             by_ids.setdefault(frozenset(ids), []).append(sid)
-        # 组排序: DolphinID 数降序, 同数按最小 shot_id 升序
+        # 组排序: DolphinID 数降序, 同数按最小 ShotID 升序
         def group_key(item):
             ids, sids = item
             return (-len(ids), min(shot_num(s) for s in sids))
 
         groups = {}
         self.social_tooltips = {}
-        img_group = {}  # orig_img_name -> NN 组名
+        img_group = {}  # PhotoName -> NN 组名
         formed = []  # (DolphinID 集合, shot 列表, 组内原图)
         for ids, sids in sorted(by_ids.items(), key=group_key):
             # 组内仍只收同一张原图里含多个海豚 (>=2 个 DolphinID) 鳍的图
             multi = []
             for sid in sorted(sids, key=shot_num):
-                g = sub[sub["shot_id"] == sid]
-                per_img = g.groupby("orig_img_name")["DolphinID"].nunique()
+                g = sub[sub["ShotID"] == sid]
+                per_img = g.groupby("PhotoName")["DolphinID"].nunique()
                 multi.extend(per_img[per_img >= 2].index)
             if multi:
                 formed.append((ids, sids, multi))
         for n, (ids, sids, multi) in enumerate(formed, 1):
             name = "NN%03d" % n
             sid_disp = []
-            for s in sorted(sids, key=shot_num):  # shot_id 常读成浮点, 显示整数
+            for s in sorted(sids, key=shot_num):  # ShotID 常读成浮点, 显示整数
                 try:
                     sid_disp.append(str(int(float(s))))
                 except (ValueError, TypeError):
@@ -279,16 +279,16 @@ class Dataset:
         """把 NN 组名写回 IMAGE_METAINFO.csv 和 FIN_METAINFO.csv 的
         SocialStructure 列 (鳍图按所属原图取组名; 不在任何组的为空);
         内容不变时不写盘。"""
-        if not self.image_df.empty and "orig_img_name" in self.image_df.columns:
-            col = self.image_df["orig_img_name"].map(img_group)
-            old = self.image_df["SocialStructure"] \
-                if "SocialStructure" in self.image_df.columns else None
+        if not self.photo_df.empty and "PhotoName" in self.photo_df.columns:
+            col = self.photo_df["PhotoName"].map(img_group)
+            old = self.photo_df["SocialStructure"] \
+                if "SocialStructure" in self.photo_df.columns else None
             if old is None or not old.fillna("").astype(str) \
                     .equals(col.fillna("").astype(str)):
-                self.image_df["SocialStructure"] = col
-                self._save_csv(self.image_df, "IMAGE_METAINFO.csv")
-        if not self.fin_df.empty and "orig_img_name" in self.fin_df.columns:
-            col = self.fin_df["orig_img_name"].map(img_group)
+                self.photo_df["SocialStructure"] = col
+                self._save_csv(self.photo_df, "IMAGE_METAINFO.csv")
+        if not self.fin_df.empty and "PhotoName" in self.fin_df.columns:
+            col = self.fin_df["PhotoName"].map(img_group)
             old = self.fin_df["SocialStructure"] \
                 if "SocialStructure" in self.fin_df.columns else None
             if old is None or not old.fillna("").astype(str) \
@@ -403,13 +403,13 @@ class Dataset:
                                   key=lambda f: (-counts[f], num(f)))]
 
     def fin_id_shot_counts(self):
-        """[(label, count)]: 每个 FinID 出现的不同 shot 数 (按 shot_id 去重),
+        """[(label, count)]: 每个 FinID 出现的不同 shot 数 (按 ShotID 去重),
         排序与 fin_id_counts 一致; 不含 FinID_0。"""
         if self.fin_df.empty or "FinID" not in self.fin_df.columns \
-                or "shot_id" not in self.fin_df.columns:
+                or "ShotID" not in self.fin_df.columns:
             return []
-        df = self.fin_df.dropna(subset=["FinID", "shot_id"])
-        counts = df.groupby("FinID")["shot_id"].nunique()
+        df = self.fin_df.dropna(subset=["FinID", "ShotID"])
+        counts = df.groupby("FinID")["ShotID"].nunique()
         counts = counts[[fid for fid in counts.index if fid != 0]]
         def num(fid):
             try:
@@ -769,22 +769,22 @@ class Dataset:
             .to_csv(path, index=False)
 
     def move_shot(self, paths, group):
-        """改连拍分组: 更新 image_df 和 fin_df 的 shot_id。"""
+        """改连拍分组: 更新 photo_df 和 fin_df 的 ShotID。"""
         m = re.match(r"shot_(\d+)$", group)
         if not m:
             return {}
         sid = int(m.group(1))
         names = {os.path.basename(p) for p in paths}
         moved = {p: p for p in paths}
-        if not self.image_df.empty:
-            mask = self.image_df["orig_img_name"].isin(names)
+        if not self.photo_df.empty:
+            mask = self.photo_df["PhotoName"].isin(names)
             if mask.any():
-                self.image_df.loc[mask, "shot_id"] = sid
-                self._save_csv(self.image_df, "IMAGE_METAINFO.csv")
-        if not self.fin_df.empty and "orig_img_name" in self.fin_df.columns:
-            mask = self.fin_df["orig_img_name"].isin(names)
+                self.photo_df.loc[mask, "ShotID"] = sid
+                self._save_csv(self.photo_df, "IMAGE_METAINFO.csv")
+        if not self.fin_df.empty and "PhotoName" in self.fin_df.columns:
+            mask = self.fin_df["PhotoName"].isin(names)
             if mask.any():
-                self.fin_df.loc[mask, "shot_id"] = sid
+                self.fin_df.loc[mask, "ShotID"] = sid
                 self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return moved
 
@@ -888,7 +888,7 @@ class Dataset:
 
     def move_track_to_fin_id(self, paths, group):
         """改个体分组 (勾选最佳鳍图时的侧边拖放): 只更新同 track
-        (shot_id + TrackIDInShot) 的鳍的 FinID, 不动整个个体。"""
+        (ShotID + TrackIDInShot) 的鳍的 FinID, 不动整个个体。"""
         m = re.match(r"FinID_(.+)$", group)
         if not m:
             return {}
@@ -902,15 +902,15 @@ class Dataset:
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        # 扩展到同 track 的所有鳍 (TrackIDInShot 只在 shot 内唯一, 需带 shot_id)
+        # 扩展到同 track 的所有鳍 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)
         if "TrackIDInShot" in self.fin_df.columns \
-                and "shot_id" in self.fin_df.columns:
+                and "ShotID" in self.fin_df.columns:
             key_rows = self.fin_df.loc[
-                mask, ["shot_id", "TrackIDInShot"]].dropna()
-            pairs = set(zip(key_rows["shot_id"], key_rows["TrackIDInShot"]))
+                mask, ["ShotID", "TrackIDInShot"]].dropna()
+            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
             if pairs:
                 row_keys = pd.Series(
-                    list(zip(self.fin_df["shot_id"],
+                    list(zip(self.fin_df["ShotID"],
                              self.fin_df["TrackIDInShot"])),
                     index=self.fin_df.index)
                 mask = mask | row_keys.isin(pairs)
@@ -958,13 +958,13 @@ class Dataset:
         mask = df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        # 同 track 扩展 (TrackIDInShot 只在 shot 内唯一, 需带 shot_id)
-        if "TrackIDInShot" in df.columns and "shot_id" in df.columns:
-            key_rows = df.loc[mask, ["shot_id", "TrackIDInShot"]].dropna()
-            pairs = set(zip(key_rows["shot_id"], key_rows["TrackIDInShot"]))
+        # 同 track 扩展 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)
+        if "TrackIDInShot" in df.columns and "ShotID" in df.columns:
+            key_rows = df.loc[mask, ["ShotID", "TrackIDInShot"]].dropna()
+            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
             if pairs:
                 row_keys = pd.Series(
-                    list(zip(df["shot_id"], df["TrackIDInShot"])),
+                    list(zip(df["ShotID"], df["TrackIDInShot"])),
                     index=df.index)
                 mask = mask | row_keys.isin(pairs)
         nums = pd.to_numeric(df["FinID"], errors="coerce")
