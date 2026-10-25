@@ -8,6 +8,7 @@ export_dolphin_pptx(dolphins, out_path): 全部海豚放在同一页 16:9 幻灯
 DolphinID 直接叠加在接缝处 (数据来自 ds.dolphins(), 与 Dolphin 页
 Overview 模式同一份)。
 """
+#TODO: use information from FIN_METAINFO.csv directly.
 
 import io
 import math
@@ -46,14 +47,13 @@ def export_dolphin_pptx(dolphins, out_path):
         half = ch / 2
         _add_pic(slide, dl, x, y, cw, half)
         _add_pic(slide, dr, x, y + half, cw, half)
-        tb = slide.shapes.add_textbox(Inches(x), Inches(y + half - 0.3),
+        tb = slide.shapes.add_textbox(Inches(x), Inches(y + half - 0.15),
                                       Inches(cw), Inches(0.3))
         tf = tb.text_frame
         tf.text = str(name)
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.CENTER
-        #p.runs[0].font.size = Pt(min(16, max(9, ch * 7)))
-        p.runs[0].font.size = Pt(24)
+        p.runs[0].font.size = Pt(min(24, max(9, ch * 7)))
         p.runs[0].font.bold = True
     prs.save(out_path)
     return n

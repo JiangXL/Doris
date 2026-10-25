@@ -79,7 +79,7 @@ class FinLocator:
 
             fin_rows.append(
                 {   
-                    "Identity": "",
+                    "identity": "",
                     "PhotoName": photo_name,
                     "PhotoWidth": photo_w,
                     "PhotoHeight": photo_h,
@@ -163,7 +163,7 @@ class FinLocator:
                 all_rows.extend(batch_rows)
         self.fin_info = pd.DataFrame(all_rows)
         # 生成唯一编号
-        self.fin_info["Identity"] = range(len(self.fin_info))
+        self.fin_info["identity"] = range(len(self.fin_info))
         self.save_info_to_csv()
 
     def update_meta_info(self):
@@ -202,7 +202,7 @@ if __name__ == "__main__":
         print("Using GPU")
         batch = 32
         decode = int(cpu_num * 0.8)
-        prefetch = 2*cpu_num
+        prefetch = 3*cpu_num
     else: # cpu only
         print("Using CPU")
         batch = int(cpu_num*0.5)

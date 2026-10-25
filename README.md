@@ -31,6 +31,8 @@ only cofirm fin number larger than 5?
 
 Group-DolphinID-FinID
 
+如何兼容当前格式？
+
 
 ## GUI Layout
 There following planes:

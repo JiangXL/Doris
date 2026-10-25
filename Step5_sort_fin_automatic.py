@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # coding: utf-8
 import os
 import numpy as np
@@ -6,9 +5,6 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from scipy.optimize import linear_sum_assignment
 
-from wildlife_tools.features import DeepFeatures
-from wildlife_tools.similarity import CosineSimilarity
-from wildlife_tools.data import FeatureDataset
 from KalmanBoxTracker import KalmanBoxTracker
 
 class FinSorter:
@@ -24,8 +20,7 @@ class FinSorter:
         self,
         root_dir,
         metainfo_csv='METAINFO/FIN_METAINFO.csv',
-        deepfeatures_dir='METAINFO/FIN_DEEPFEATURES',
-        output_csv='METAINFO/FIN_METAINFO.csv',
+        deepfeatures='METAINFO/FIN_DEEPFEATURES.npy',
         similarity_npy='METAINFO/FIN_SIMILARITY.npy',
         threshold=DEFAULT_THRESHOLD,
     ):
@@ -33,16 +28,12 @@ class FinSorter:
         Args:
             root_dir: Root directory of the project.
             metainfo_csv: Relative path to the metadata CSV.
-            deepfeatures_dir: Relative path to the deep features directory.
-            output_csv: Relative path for the output metadata CSV; new
-                columns (e.g. FinID) are merged back into the full metadata.
             similarity_npy: Relative path for the output similarity matrix.
             threshold: Cosine similarity threshold for clustering.
         """
         self.root_dir = root_dir
         self.metainfo_csv = os.path.join(root_dir, metainfo_csv)
-        self.deepfeatures_dir = os.path.join(root_dir, deepfeatures_dir)
-        self.output_csv = os.path.join(root_dir, output_csv)
+        self.deepfeatures = os.path.join(root_dir, deepfeatures)
         self.similarity_npy = os.path.join(root_dir, similarity_npy)
         self.threshold = threshold
 
@@ -52,14 +43,32 @@ class FinSorter:
         self.fin_id_list = None
 
     def load_data(self):
-        """Load metadata and deep features."""
-        self.metainfo = pd.read_csv(self.metainfo_csv)#, index_col=0)
-        self.features = FeatureDataset.from_file(self.deepfeatures_dir)
+        """Load metadata and deep features.
+        """
+        self.metainfo = pd.read_csv(self.metainfo_csv)  # , index_col=0)
+
+        npy_path = self.deepfeatures
+        if not os.path.isfile(npy_path):
+            raise FileNotFoundError("Feature file not found: %s" % npy_path)
+        self.features = np.load(npy_path)
+
+    def filter_fin_by_clearness(self, clearness_threshold, crop_conf_threshold):
+        """Compute statistics after applying thresholds."""
+        self.metainfo["Select"] = (
+          (self.metainfo["Clearness"] > clearness_threshold)
+          * (self.metainfo["CropConf"] > crop_conf_threshold)
+        )
+        self.metainfo["Clear"] = (
+            self.metainfo["Clearness"] > clearness_threshold
+        )
 
     def compute_similarity(self):
         """Compute cosine similarity matrix between all features."""
-        matcher = CosineSimilarity()
-        self.similarity = matcher(self.features, self.features)
+        feats = self.features
+        norms = np.linalg.norm(feats, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0  # avoid division by zero
+        normalized = feats / norms
+        self.similarity = np.dot(normalized, normalized.T)
 
     def correct_fin_class_by_shot(self, class_col="AssumedAspect",
                                   out_col="ConfirmedAspect"):
@@ -70,23 +79,23 @@ class FinSorter:
         The original column is kept; corrections go to `out_col`.
         'Others' (unknown side) neither votes nor gets corrected.
         """
-        metadata = self.features.metadata
+        metadata = self.metainfo
         if class_col not in metadata.columns:
             print("No %s column found, skip class correction" % class_col)
             return
-        if "shot_id" not in metadata.columns:
+        if "ShotID" not in metadata.columns:
             print("No shot_id column found, skip class correction")
             return
         corrected = metadata[class_col].copy()
         flip_count = 0
         mixed_shot_count = 0
-        for shot_id, shot in metadata.groupby("shot_id"):
+        for shot_id, shot in metadata.groupby("ShotID"):
             votes = {}
             for _, row in shot.iterrows():
                 cls = row[class_col]
                 if cls not in ("DL", "DR"):
                     continue
-                votes[cls] = votes.get(cls, 0.0) + float(row["crop_conf"])
+                votes[cls] = votes.get(cls, 0.0) + float(row["CropConf"])
             if len(votes) < 2:
                 continue  # consistent shot or no DL/DR at all
             mixed_shot_count += 1
@@ -112,7 +121,7 @@ class FinSorter:
     def _load_cumulative_offsets(self):
         """
         Load per-frame global (whole-image) motion from
-        METAINFO/IMAGE_METAINFO.csv (written by Step1b_burst_jitter.py)
+        METAINFO/PHOTO_METAINFO.csv (written by Step1b_analyse_photo_jitter.py )
         and cumulate it within each shot relative to the shot's first
         frame. ecc offsets are preferred; pc is the fallback. Offsets map
         previous-frame coordinates to current-frame coordinates, so a
@@ -120,12 +129,12 @@ class FinSorter:
         reference by subtracting its cumulative offset.
 
         Returns:
-            dict {orig_img_name: (cum_dx, cum_dy)}, or None when no
+            dict {photo_name: (cum_dx, cum_dy)}, or None when no
             jitter data is available (tracking then runs uncompensated).
         """
-        path = os.path.join(self.root_dir, "METAINFO", "IMAGE_METAINFO.csv")
+        path = os.path.join(self.root_dir, "METAINFO", "PHOTO_METAINFO.csv")
         if not os.path.exists(path):
-            print("No IMAGE_METAINFO.csv, track without motion compensation")
+            print("No PHOTO_METAINFO.csv, track without motion compensation")
             return None
         df = pd.read_csv(path)
         if "ecc_dx" in df.columns:
@@ -142,11 +151,11 @@ class FinSorter:
         df["_dy"] = dy.fillna(0.0)
         offsets = {}
         # filenames are sequential in time within a burst
-        for _, group in df.groupby("shot_id"):
-            group = group.sort_values("orig_img_name")
+        for _, group in df.groupby("ShotID"):
+            group = group.sort_values("PhotoName")
             cum_dx = group["_dx"].cumsum()
             cum_dy = group["_dy"].cumsum()
-            for name, cx, cy in zip(group["orig_img_name"], cum_dx, cum_dy):
+            for name, cx, cy in zip(group["PhotoName"], cum_dx, cum_dy):
                 offsets[name] = (float(cx), float(cy))
         return offsets
 
@@ -159,7 +168,7 @@ class FinSorter:
         with a SORT-style tracker (constant-velocity Kalman filter +
         Hungarian assignment). Whole-image motion (camera shake, boat
         motion) is compensated first with the per-frame jitter offsets
-        from IMAGE_METAINFO.csv (see _load_cumulative_offsets), so the
+        from PHOTO_METAINFO.csv (see _load_cumulative_offsets), so the
         Kalman filter only has to model dolphin motion; Hungarian
         enforces one-to-one matching so one fin cannot be linked to two
         different dolphins. All members of a track get pairwise
@@ -173,18 +182,18 @@ class FinSorter:
                 when available (see correct_fin_class_by_shot), otherwise
                 the raw 'class' column.
         """
-        print("linking fin based on shot group with Kalman + Hungarian")
+        print("Linking fin based on shot group with Kalman + Hungarian. ")
         class_col = "Aspect"
-        img_col = "orig_img_name"
-        if "shot_id" not in self.metainfo.columns:
-            print("No shot_id column found, skip must-link")
+        img_col = "PhotoName"
+        if "ShotID" not in self.metainfo.columns:
+            print("No ShotID column found, skip must-link")
             return
         offsets = self._load_cumulative_offsets()
 
         track_id_list = np.zeros(len(self.metainfo), dtype=np.int32)
         track_count = 0
-        for shot_id in sorted(self.metainfo["shot_id"].unique()):
-            shot = self.metainfo[self.metainfo["shot_id"] == shot_id]
+        for shot_id in sorted(self.metainfo["ShotID"].unique()):
+            shot = self.metainfo[self.metainfo["ShotID"] == shot_id]
             tracks = self._track_shot(shot, img_col, class_col,
                                       gate_dist, max_age, same_class_only,
                                       offsets)
@@ -200,26 +209,26 @@ class FinSorter:
                         self.similarity[track[j], track[i]] = 1
         self.metainfo["TrackIDInShot"] = track_id_list
         print("Total %d tracks in %d shot"
-              % (track_count, len(self.metainfo["shot_id"].unique())))
+              % (track_count, len(self.metainfo["ShotID"].unique())))
 
 
-    def _track_shot(self, shot, img_col, class_col,
+    def _track_shot(self, shot, photo_col, class_col,
                     gate_dist, max_age, same_class_only, offsets=None):
         """Run the Kalman + Hungarian tracker over one burst.
         When offsets (see _load_cumulative_offsets) are given, detection
         boxes are moved into the shot's first-frame reference first, so
         the tracker sees dolphin motion with whole-image jitter removed.
         Returns a list of tracks; each track is a list of fin indices."""
-        # image filenames are sequential in time within a burst
-        img_names = sorted(shot[img_col].unique()) #TODO: maybe sort by timestamp
+        # photo filenames are sequential in time within a burst
+        photo_names = sorted(shot[photo_col].unique())
         active = []    # list of (tracker, member_indices, cls)
         finished = []  # member_indices of terminated tracks
-        for img in img_names:
-            dets = shot[shot[img_col] == img]
+        for photo in photo_names:
+            dets = shot[shot[photo_col] == photo]
             det_idx = list(dets.index)
-            ox, oy = offsets.get(img, (0.0, 0.0)) if offsets else (0.0, 0.0)
-            det_boxes = [(row["x_min"] - ox, row["y_min"] - oy,
-                          row["x_max"] - ox, row["y_max"] - oy)
+            ox, oy = offsets.get(photo, (0.0, 0.0)) if offsets else (0.0, 0.0)
+            det_boxes = [(row["XMin"] - ox, row["YMin"] - oy,
+                          row["XMax"] - ox, row["YMax"] - oy)
                          for _, row in dets.iterrows()]
             pred_boxes = [trk.predict() for trk, _, _ in active]
             matched, un_dets = self._assign(
@@ -270,16 +279,17 @@ class FinSorter:
         matched_dets = {c for _, c in matched}
         return matched, [j for j in range(n_det) if j not in matched_dets]
 
-    def mark_best_in_shot(self, quality_col="clearness"):
+    def mark_best_in_shot(self, quality_col="Clearness"):
         """
         find the best quality fin for each track inside the same shot
         group. Quality score = clearness x crop_conf. Appends a boolean
         column "BestInShot": True for the highest-scoring fin.
         """
         best = pd.Series(False, index=self.metainfo.index)
-        for shot_id, shot in self.metainfo.groupby("shot_id"):
+        for shot_id, shot in self.metainfo.groupby("ShotID"):
             for track_id, track in shot.groupby("TrackIDInShot"):
-                score = track[quality_col] * track["crop_conf"]
+                # what about find the highest clearnes if CropConf higher than xxx
+                score = track[quality_col] * track["CropConf"]
                 if score.isna().all():
                     continue
                 best[score.idxmax()] = True
@@ -287,7 +297,7 @@ class FinSorter:
         print("Best in shot: %d marked out of %d fins"
               % (int(best.sum()), len(self.metainfo)))
 
-    def automatic_link_fin(self, index):
+    def automatic_link_fin_by_similarity(self, index):
         """
         Link a feature at `index` to similar features based on cosine similarity.
         update current fin ID assignments (modified in-place).
@@ -354,7 +364,7 @@ class FinSorter:
         Only fins marked BestInShot are compared (cosine similarity);
         merging is transitive (union-find), and a merged pair shares its
         FinID with all fins that have the same TrackIDInShot.
-        Only clear fins whose class is DL or DR participate, and merging
+        Only fins which are DL/DR and Clear participate, and merging
         only happens between fins of the same aspect (DL with DL, DR with
         DR); the FinID is propagated only to same-aspect fins in the
         merged tracks. Everything else is left unclassified (FinID 0).
@@ -362,7 +372,7 @@ class FinSorter:
         best_mask = (self.metainfo["BestInShot"].astype(str).str.lower()
                      .isin(["true", "1"]))
         aspect_mask = self.metainfo["Aspect"].isin(["DL", "DR"]).to_numpy()
-        clear_mask = self.metainfo["clear"].isin([1]).to_numpy()
+        clear_mask = self.metainfo["Clear"].isin([1]).to_numpy()
         candidate_mask = best_mask & aspect_mask & clear_mask
 
         candidate_idx = np.flatnonzero(candidate_mask.to_numpy())
@@ -409,14 +419,14 @@ class FinSorter:
 
     def exclude_same_image_duplicates(self):
         """
-        Exclude multiple fins detected from the same original image
+        Exclude multiple fins detected from the same original photo
         by zeroing their cross-similarity.
         """
-        ori_image_list = self.features.metadata.orig_img_name.unique()
+        photo_list = self.metainfo["PhotoName"].unique()
         occurred_number = 0
-        for image in ori_image_list:
-            fin_idx_list = self.features.metadata.index[
-                self.features.metadata.orig_img_name == image
+        for photo in photo_list:
+            fin_idx_list = self.metainfo.index[
+                self.metainfo["PhotoName"] == photo
             ].values
             fin_number = len(fin_idx_list)
             if fin_number > 1:
@@ -427,19 +437,21 @@ class FinSorter:
                         fin_idx_j = fin_idx_list[j]
                         self.similarity[fin_idx_i, fin_idx_j] = 0
                         self.similarity[fin_idx_j, fin_idx_i] = 0
-        print("Found %s images have multiple fins" % (occurred_number))
+        print("Found %s photos have multiple fins" % (occurred_number))
 
     def save_results(self):
         """Save FinID to metainfo CSV."""
         print("Update FIN_METAINFO.csv")
         self.metainfo["FinID"] = self.fin_id_list
-        self.metainfo.to_csv(self.output_csv, index=False)
+        self.metainfo.to_csv(self.metainfo_csv, index=False)
         print("Save FIN_SIMILARITY.npy")
         np.save(self.similarity_npy, self.similarity)
 
     def sort(self):
         """Execute the full sorting pipeline."""
         self.load_data()
+        #self.filter_fin_by_clearness(
+        #        clearness_threshold=0.15, crop_conf_threshold=0.4)
         self.compute_similarity()
         self.exclude_same_image_duplicates()
         #self.correct_fin_class_by_shot()
@@ -450,7 +462,6 @@ class FinSorter:
         self.save_results()
 
 if __name__ == '__main__':
-    #root_dir = r'/media/filming/2025-白海豚/20240825-JM_02-3/'
     import sys
     if len(sys.argv) == 2:
         root_dir = sys.argv[1]

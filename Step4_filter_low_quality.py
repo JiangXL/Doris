@@ -1,13 +1,9 @@
-#!/usr/bin/env python
 # coding: utf-8
 # 背鳍图片质量控制
 import os
-import glob
-import shutil
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 class FinQualityFilter:
     """Filter low-quality fin images based on clearness and crop confidence."""
@@ -24,13 +20,13 @@ class FinQualityFilter:
 
     def filter_fin_and_save_info(self):
         """Compute statistics after applying thresholds."""
-        self.metainfo["select"] = (
-            (self.metainfo.clearness > self.clearness_threshold)
-            * (self.metainfo.crop_conf > self.crop_conf_threshold)
+        self.metainfo["Select"] = (
+            (self.metainfo["Clearness"] > self.clearness_threshold)
+            * (self.metainfo["CropConf"] > self.crop_conf_threshold)
         )
-        self.metainfo["clear"] = (
-            self.metainfo.clearness > self.clearness_threshold
-        ).astype(int)
+        self.metainfo["Clear"] = (
+            self.metainfo["Clearness"] > self.clearness_threshold
+        )
         # Save the updated metainfo DataFrame to CSV
         self.metainfo.to_csv(self.metainfo_csv)
  
