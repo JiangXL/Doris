@@ -17,5 +17,5 @@
 [] 在 full-open window 里，右键菜单，加入 "MISC", "NOTE"
 [] keep full-open window when user delete one of photo
 [] 拆分 Track ，根据图像相似度？在哪里拆分？
-
+[] 独立 Statistic 画图逻辑和主GUI。无须主 GUI 处理数据.
 

@@ -5,12 +5,9 @@
 #     （ImageDataset = 普通 Dataset；DeepFeatures = 批量前向传播）
 #   - 支持任意 timm 模型（默认 MegaDescriptor-L-384，用本地权重完全离线加载），
 #     可加载本地微调权重
-#   - 同时输出两种格式：
-#       1. wildlife_tools FeatureDataset 兼容的 pickle（下游 Step4-7 可直接用）
-#       2. 通用格式 FIN_DEEPFEATURES.npy（特征矩阵）+ FIN_DEEPFEATURES.csv（对应图片路径）
+#   - 输出：  通用格式 FIN_DEEPFEATURES.npy（特征矩阵）+ FIN_DEEPFEATURES.csv（对应图片路径）
 
 import os
-import pickle
 
 import numpy as np
 import pandas as pd
@@ -63,7 +60,6 @@ class FinFeatureExtractorGeneral:
         output_name=None,           # default depends on checkpoint, see below
         checkpoint= DEFAULT_CHECKPOINT,            # local fine-tuned weights (.pth); None = 用预训练权重
         pretrained_weights=DEFAULT_PRETRAINED,     # 本地预训练权重；hf-hub 模型时忽略（从 HF 加载）
-        save_portable=True,         # also save .npy + .csv next to the pickle
     ):
         self.model_name = model_name
         self.img_size = img_size
@@ -136,19 +132,9 @@ class FinFeatureExtractorGeneral:
     def _save(self, out_path, features, metadata, root_dir):
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-        # wildlife_tools FeatureDataset 兼容格式（下游 Step4-7 的 from_file 可直接读取）
-        with open(out_path, 'wb') as f:
-            pickle.dump({
-                'features': features,
-                'metadata': metadata,
-                'col_label': 'identity',
-                'load_label': True,
-            }, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-        if self.save_portable:
-            # 通用格式：特征矩阵 + 行对应的图片路径，任何工具都能读
-            np.save(out_path + '.npy', features)
-            metadata.to_csv(out_path + '.csv', index=False)
+        # 通用格式：特征矩阵 + 行对应的图片路径
+        np.save(out_path + '.npy', features)
+        metadata.to_csv(out_path + '.csv', columns=["PhotoName", "Path"], index=False)
 
 
 if __name__ == '__main__':

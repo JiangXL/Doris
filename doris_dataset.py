@@ -1103,6 +1103,23 @@ class Dataset:
                    "DolphinID"] = name
         self._save_csv(df, "FIN_METAINFO.csv")
 
+    def _assign_fin_id_to_mask(self, mask, fid, sync_dolphin=True):
+        """把 mask 选中的行设为 fid; sync_dolphin=True 时按目标 FinID
+        同步/清除 DolphinID。写回 CSV。返回 {path: path} 的被移动映射。"""
+        self.fin_df.loc[mask, "FinID"] = fid
+        if sync_dolphin and "DolphinID" in self.fin_df.columns:
+            fin_mask = self.fin_df["FinID"] == fid
+            target_mask = fin_mask & ~mask
+            target_dph = self.fin_df.loc[
+                target_mask, "DolphinID"].dropna().unique()
+            if len(target_dph):
+                self.fin_df.loc[mask, "DolphinID"] = str(target_dph[0])
+            else:
+                self.fin_df.loc[mask, "DolphinID"] = pd.NA
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
+
     def move_track_to_fin_id(self, paths, group):
         """改个体分组 (勾选最佳鳍图时的侧边拖放): 只更新同 track
         (ShotID + TrackIDInShot) 的鳍的 FinID, 不动整个个体。"""
@@ -1131,11 +1148,24 @@ class Dataset:
                              self.fin_df["TrackIDInShot"])),
                     index=self.fin_df.index)
                 mask = mask | row_keys.isin(pairs)
-        self.fin_df.loc[mask, "FinID"] = fid
-        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
-        # 返回所有实际被移动的鳍, 让界面把它们一起换组
-        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
-        return {p: p for p in moved_paths}
+        return self._assign_fin_id_to_mask(mask, fid)
+
+    def move_selected_to_fin_id(self, paths, group):
+        """只把被选中的鳍图移到目标 FinID, 不扩展同 track, 不改动 DolphinID。"""
+        m = re.match(r"FinID(.+)$", group)
+        if not m:
+            return {}
+        fid = m.group(1)
+        try:
+            fid = int(float(fid))
+        except ValueError:
+            pass
+        if "FinID" not in self.fin_df.columns:
+            self.fin_df["FinID"] = pd.NA
+        mask = self.fin_df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        return self._assign_fin_id_to_mask(mask, fid, sync_dolphin=False)
 
     # ------------------------------------------------------------------
     # 三栏模式排除区: 相似度置 0 并持久化到 FIN_SIMILARITY.npy

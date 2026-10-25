@@ -417,7 +417,7 @@ class FinSorter:
                 self.similarity[fin, fin_has_same_id_list] = 1
         #print("Connected node number:", np.sum(self.similarity == 1))
 
-    def exclude_same_image_duplicates(self):
+    def exclude_same_photo_duplicates(self):
         """
         Exclude multiple fins detected from the same original photo
         by zeroing their cross-similarity.
@@ -453,7 +453,7 @@ class FinSorter:
         #self.filter_fin_by_clearness(
         #        clearness_threshold=0.15, crop_conf_threshold=0.4)
         self.compute_similarity()
-        self.exclude_same_image_duplicates()
+        self.exclude_same_photo_duplicates()
         #self.correct_fin_class_by_shot()
         self.automatic_link_fin_by_shot_group()
         self.mark_best_in_shot()
