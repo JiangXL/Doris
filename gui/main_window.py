@@ -126,6 +126,12 @@ class MainWindow(QMainWindow):
                 similar_provider=ds.similar_fins if title == "Fin ID" else None,
                 track_mover=ds.move_track_to_fin_id if title == "Fin ID" else None,
                 track_move_checkbox=True if title == "Fin ID" else False,
+                shot_type_setter=ds.set_shot_type
+                if title == "Continuous Shots" else None,
+                shot_info_provider=ds.shot_info
+                if title == "Continuous Shots" else None,
+                box_editor=self._edit_box
+                if title in fin_tabs or title == "Continuous Shots" else None,
                 exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
                 if title == "Fin ID" else None,
                 overview_provider=ds.fin_id_previews
@@ -202,7 +208,10 @@ class MainWindow(QMainWindow):
         self._dolphin_review_tab = GroupedTab(
             mover=None, full_resolver=ds.orig_of_fin,
             labels=ds.dolphin_fin_labels(),
-            clear_mark=ds.fin_clear_marks().__contains__)
+            clear_mark=ds.fin_clear_marks().__contains__,
+            best_marker=ds.mark_best_fins,
+            best_in_fin_provider=ds.fin_best_in_fin_marks,
+            on_moved=self._refresh_tabs)
         groups = ds.dolphin_groups()
         if groups:
             self._dolphin_review_tab.set_groups(groups)
@@ -223,7 +232,8 @@ class MainWindow(QMainWindow):
         #    组名写回 IMAGE/FIN_METAINFO.csv 的 SocialStructure 列;
         #    仿 Continuous Shots 页在原图上画鳍框, 标注 FinID 和 DolphinID
         #    (须排在 Dolphin 页后, ds.dolphins() 已分配 DolphinID 列)
-        tab_social = GroupedTab(mover=None, on_moved=self._refresh_tabs)
+        tab_social = GroupedTab(mover=None, on_moved=self._refresh_tabs,
+                                box_editor=self._edit_box)
         groups = ds.social()
         if groups:
             tab_social.set_groups(groups, ds.social_tooltips,
@@ -339,6 +349,23 @@ class MainWindow(QMainWindow):
                 self.ds.aspect_counts(), self.ds.clearness_values(),
                 self.ds.dolphin_shot_counts(),
                 self.ds.social_network_data())
+
+    def _edit_box(self, path, action, index, new_box=None):
+        """全图查看器的鳍框编辑回调: 更新 CSV 与裁剪图, 并刷新相关 tab 缩略图。"""
+        old_boxes = self.ds.fin_boxes().get(path, [])
+        if index >= len(old_boxes):
+            return None
+        old_box = old_boxes[index]
+        if action == "update" and new_box is not None:
+            self.ds.edit_fin_box(path, old_box, new_box)
+            for title, tab, fn in self._group_tabs:
+                if title in ("Continuous Shots", "Social Structure"):
+                    dolphin_id = (title == "Social Structure")
+                    tab._boxes[path] = self.ds.fin_boxes(
+                        dolphin_id=dolphin_id).get(path, [])
+                    tab.grid.refresh_path(path)
+            return self.ds.fin_boxes().get(path, [])
+        return None
 
     def _rebuild_group_tab(self, tab, title, fn):
         """重建一个分组页 (Continuous Shots / Fin Aspect / Blur / Fin ID / Social Structure)。"""

@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QWidget, QTabWidget, QSplitter, QListWidget, QListWidgetItem,
     QLabel, QVBoxLayout, QHBoxLayout, QDialog, QScrollArea,
     QFileDialog, QMessageBox, QShortcut, QPushButton,
-    QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox,
+    QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox, QComboBox,
     QGridLayout, QPlainTextEdit,
 )
 from PyQt5.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush
@@ -101,7 +101,8 @@ class GroupedTab(QWidget):
                  similar_provider=None, track_mover=None, exclude=None,
                  overview_provider=None, merger=None, clear_mark=None,
                  best_marker=None, best_in_fin_provider=None, renamer=None,
-                 track_move_checkbox=False, parent=None):
+                 track_move_checkbox=False, shot_type_setter=None,
+                 shot_info_provider=None, box_editor=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -128,7 +129,11 @@ class GroupedTab(QWidget):
         renamer: callable() -> dict; 给定后顶栏出现 "Rename ID" 按钮,
         把所有 FinID 重新编号为 1..N (N=FinID 数量)
         track_move_checkbox: True 时顶栏出现 "Move whole track" 复选框,
-        默认勾选; Review 模式下侧边拖放勾选时移动同 track, 未勾选时只移动选中图"""
+        默认勾选; Review 模式下侧边拖放勾选时移动同 track, 未勾选时只移动选中图
+        shot_type_setter: callable(shot_id, shot_type); 给定后顶栏出现 ShotType
+        下拉框, 供 Continuous Shots 页为整组连拍设置类型
+        shot_info_provider: callable(shot_id) -> dict; 给定后顶栏显示该 shot
+        第一张图的 DateTime/FocusLength35mm/Distance 信息"""
         super().__init__(parent)
         self._mover = mover
         self._track_mover = track_mover
@@ -150,6 +155,9 @@ class GroupedTab(QWidget):
         self._overview = False      # 总览模式
         self._merger = merger       # Overview 模式拖放合并 FinID
         self._tri = False           # 三栏模式
+        self._shot_type_setter = shot_type_setter
+        self._shot_info_provider = shot_info_provider
+        self._box_editor = box_editor
         self.vsplit = None
         self.similar_grid = None
         self.excluded_grid = None
@@ -162,6 +170,7 @@ class GroupedTab(QWidget):
         self.group_list.setWordWrap(False)
         self.group_list.setTextElideMode(Qt.ElideNone)  # 不省略
         self.grid = ImageGrid()
+        self.grid.set_box_editor(box_editor)
         self.splitter.addWidget(self.group_list)
         self.splitter.addWidget(self.grid)
         self.splitter.setStretchFactor(1, 1)
@@ -169,7 +178,10 @@ class GroupedTab(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         if self._best_mark is not None or self._overview_provider is not None \
-                or self._clear_mark is not None:
+                or self._clear_mark is not None \
+                or self._shot_type_setter is not None \
+                or self._shot_info_provider is not None \
+                or (track_move_checkbox and self._track_mover is not None):
             bar = QWidget()
             bar.setFixedHeight(26)  # 顶栏限高, 默认会被按钮撑得很高
             top = QHBoxLayout(bar)
@@ -227,6 +239,23 @@ class GroupedTab(QWidget):
                     "勾选后侧边拖放会同时移动同 ShotID+TrackIDInShot 的鳍图")
                 self._track_move_cb.setChecked(True)
                 top.addWidget(self._track_move_cb)
+            self._shot_type_cb = None
+            self._shot_info_label = None
+            if self._shot_type_setter is not None \
+                    or self._shot_info_provider is not None:
+                if self._shot_type_setter is not None:
+                    top.addWidget(QLabel("ShotType:"))
+                    self._shot_type_cb = QComboBox()
+                    self._shot_type_cb.addItems(
+                        ["", "NOTE", "SEABIRD", "Dolphin", "MISC"])
+                    self._shot_type_cb.setMinimumWidth(90)
+                    self._shot_type_cb.currentTextChanged.connect(
+                        self._on_shot_type_changed)
+                    top.addWidget(self._shot_type_cb)
+                if self._shot_info_provider is not None:
+                    self._shot_info_label = QLabel()
+                    self._shot_info_label.setStyleSheet("color: #666666;")
+                    top.addWidget(self._shot_info_label)
             top.addStretch(1)
             lay.addWidget(bar)
         lay.addWidget(self.splitter)
@@ -294,8 +323,20 @@ class GroupedTab(QWidget):
         if orig not in origs:
             # 三栏模式下中键来自相似区/排除区, 图不在当前组: 插到最前
             origs.insert(0, orig)
+
+        fin_crop_path = path
+        def _edit_for_middle(orig_path, action, index, new_box=None):
+            if self._box_editor is None:
+                return None
+            updated = self._box_editor(orig_path, action, index, new_box)
+            if updated is not None:
+                # 原图框和 FIN/ 裁剪图已更新, 刷新鳍图页网格缩略图
+                self.grid.refresh_path(fin_crop_path)
+            return updated
+
         dlg = ImageViewerDialog(origs, origs.index(orig), self,
-                                boxes=self._full_boxes)
+                                boxes=self._full_boxes,
+                                box_editor=_edit_for_middle)
         dlg.exec_()
 
     def set_groups(self, groups, tooltips=None, keep_current=False, boxes=None):
@@ -355,6 +396,8 @@ class GroupedTab(QWidget):
         self._best_only = (mode == "match")
         if self._clear_cb is not None:
             self._clear_cb.setEnabled(mode == "review")  # 筛选只在 Review 模式生效
+        if self._track_move_cb is not None:
+            self._track_move_cb.setEnabled(mode == "review")
         self.group_list.setVisible(not self._overview)
         if self._best_only and self._similar_provider is not None:
             self._enter_tri_mode()
@@ -652,6 +695,50 @@ class GroupedTab(QWidget):
             labels.update(sim_labels)  # 相似度标签优先
             self.similar_grid.show_images(sim_paths, labels=labels)
             self._refresh_excluded()  # 排除区跟随当前参考组
+        self._update_shot_widgets(item.data(Qt.UserRole))
+
+    def _update_shot_widgets(self, group_name):
+        """Continuous Shots 页: 根据当前 shot 更新 ShotType 下拉框与信息标签。"""
+        if self._shot_info_provider is None and self._shot_type_setter is None:
+            return
+        if not isinstance(group_name, str) or "_" not in group_name:
+            return
+        shot_id = group_name.split("_", 1)[1]
+        info = {}
+        if self._shot_info_provider is not None:
+            try:
+                info = self._shot_info_provider(shot_id) or {}
+            except Exception:
+                info = {}
+        if self._shot_type_cb is not None:
+            self._shot_type_cb.blockSignals(True)
+            self._shot_type_cb.setCurrentText(str(info.get("shot_type", "")))
+            self._shot_type_cb.blockSignals(False)
+        if self._shot_info_label is not None:
+            parts = []
+            if info.get("datetime"):
+                parts.append("DateTime: %s" % info["datetime"][0:-4])
+            if info.get("focus_length") is not None:
+                parts.append("Focus Length: %smm" % info["focus_length"])
+            if info.get("distance") is not None:
+                parts.append("Distance: %.fm" % info["distance"])
+            self._shot_info_label.setText("  |  ".join(parts))
+
+    def _on_shot_type_changed(self, text):
+        """ShotType 下拉框改变时保存到 PHOTO_METAINFO.csv。"""
+        if self._shot_type_setter is None:
+            return
+        item = self.group_list.currentItem()
+        if item is None:
+            return
+        group_name = item.data(Qt.UserRole)
+        if not isinstance(group_name, str) or "_" not in group_name:
+            return
+        shot_id = group_name.split("_", 1)[1]
+        try:
+            self._shot_type_setter(shot_id, text)
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
 
     def _on_drop(self, paths, target_name, use_track=None):
         """use_track=None 时：优先看 "Move whole track" 复选框（Review 模式）;
@@ -732,10 +819,10 @@ class StatisticsTab(QWidget):
         right = QVBoxLayout()
         left.addWidget(FigureCanvasQTAgg(self.fig_hist))
         left.addWidget(FigureCanvasQTAgg(self.fig_shot))
-        left.addWidget(FigureCanvasQTAgg(self.fig_clear))
+        left.addWidget(FigureCanvasQTAgg(self.fig_social))
         right.addWidget(FigureCanvasQTAgg(self.fig_pie))
         right.addWidget(FigureCanvasQTAgg(self.fig_dolphin))
-        right.addWidget(FigureCanvasQTAgg(self.fig_social))
+        right.addWidget(FigureCanvasQTAgg(self.fig_clear))
         plots.addLayout(left, 2)
         plots.addLayout(right, 1)
         main_layout.addLayout(plots)
@@ -777,8 +864,8 @@ class StatisticsTab(QWidget):
 
         self._draw_bar(ax1, self._fin_counts, "Fin images per FinID",
                        fontsize=8)
-        self._draw_bar(ax2, self._shot_counts, "Shots per FinID",
-                       fontsize=8)
+        self._draw_stacked_bar(ax2, self._shot_counts,
+                               "Shots per FinID", fontsize=8)
         self._draw_hist(ax3, self._clear_values, "Clearness distribution",
                         fontsize=8)
         self._draw_pie(ax4, self._aspect_counts, "Fin aspect distribution",
@@ -806,7 +893,10 @@ class StatisticsTab(QWidget):
     def _bar(self, fig, counts, title):
         fig.clear()
         ax = fig.add_subplot(111)
-        self._draw_bar(ax, counts, title)
+        if counts and len(counts[0]) == 3:
+            self._draw_stacked_bar(ax, counts, title)
+        else:
+            self._draw_bar(ax, counts, title)
         fig.tight_layout()
         fig.canvas.draw_idle()
 
@@ -894,12 +984,14 @@ class StatisticsTab(QWidget):
                 np.sqrt(max_c) - np.sqrt(min_c))
         else:
             norm = np.zeros_like(counts)
-        node_sizes = (300 + norm * 1700).tolist()
-        k = max(2.0, 3.0 / np.sqrt(len(nodes)))
-        pos = nx.spring_layout(G, weight="weight", seed=42, k=k, iterations=50)
+        node_sizes = (200 + norm * 1000).tolist()
+        # 增大斥力常数 k 并增加迭代次数, 让节点/标签尽量不重叠
+        k = max(4.0, 10.0 / np.sqrt(len(nodes)))
+        pos = nx.spring_layout(G, weight="weight", seed=42, k=k,
+                               iterations=200, threshold=1e-4)
         weights = [d["weight"] for _, _, d in G.edges(data=True)]
         max_w = max(weights) if weights else 1
-        widths = [2 + 5 * w / max_w for w in weights]
+        widths = [1.5 + 4 * w / max_w for w in weights]
         nx.draw_networkx_edges(
             G, pos, ax=ax, width=widths, alpha=0.7,
             edge_color="#377eb8", connectionstyle="arc3,rad=0.1",
@@ -908,14 +1000,15 @@ class StatisticsTab(QWidget):
             G, pos, ax=ax, node_size=node_sizes,
             node_color="skyblue", edgecolors="white")
         nx.draw_networkx_labels(
-            G, pos, ax=ax, labels={n: n for n in nodes}, font_size=10)
+            G, pos, ax=ax, labels={n: n for n in nodes}, font_size=8,
+            font_color="#333333")
         edge_labels = {(u, v): "%d" % int(d["weight"])
                        for u, v, d in G.edges(data=True)}
         nx.draw_networkx_edge_labels(
-            G, pos, ax=ax, edge_labels=edge_labels, font_size=9,
-            font_color="#377eb8", bbox=dict(boxstyle="round,pad=0.15",
+            G, pos, ax=ax, edge_labels=edge_labels, font_size=7,
+            font_color="#377eb8", bbox=dict(boxstyle="round,pad=0.12",
                                             facecolor="white",
-                                            edgecolor="none", alpha=0.9))
+                                            edgecolor="none", alpha=0.85))
         ax.set_title("%s (%d connected)" % (title, len(nodes)))
         ax.axis("off")
 
@@ -982,8 +1075,8 @@ class DashboardTab(QWidget):
         ("4. Extract Fin Features", "../Step3_extract_fin_feature.py", False),
         ("5. Select good quality fin", "../Step4_filter_low_quality.py", False),
         ("6. Clustering", "../Step5_sort_fin_automatic.py", False),
-        ("7. Export Database", "../export_database.py", False),
-        ("8. Export Dolphin Overview PPT", "../export_pptx.py", True),
+        ("7. Export Database", "../Step6a_export_database.py", False),
+        ("8. Export Dolphin Overview PPT", "../Step6b_export_pptx.py", True),
     ]
 
     def __init__(self, parent=None):

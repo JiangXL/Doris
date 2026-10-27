@@ -15,6 +15,7 @@ DatabaseExporter 接受 FIN_METAINFO.csv / PHOTO_METAINFO.csv 的文件路径
 import os
 import shutil
 import pandas as pd
+from pathlib import Path
 
 
 class DatabaseExporter:
@@ -32,6 +33,7 @@ class DatabaseExporter:
         self.fin_df = self._load(fin_meta, "FIN_METAINFO")
         self.photo_df = self._load(photo_meta, "PHOTO_METAINFO") \
             if photo_meta is not None else None
+        self.out_dir = os.path.join(self.root_dir, "EXPORT")
 
     @staticmethod
     def _load(src, name):
@@ -42,6 +44,13 @@ class DatabaseExporter:
             return pd.read_csv(src)
         raise ValueError("%s 必须是 CSV 文件路径或 pandas DataFrame: %r"
                          % (name, src))
+
+    def _create_empty_folder(self):
+        """Create an empty folder, removing existing contents if necessary."""
+        folder_path = Path(self.out_dir)
+        if folder_path.exists():
+            shutil.rmtree(folder_path)
+        os.mkdir(self.out_dir)
 
     def _copy_orig(self, orig_name, folder):
         """把 root_dir 下的原图复制到 folder (按文件名落盘);
@@ -58,7 +67,7 @@ class DatabaseExporter:
         """按 DphID 分组导出含 Clear=True 的照片
         out_dir 默认为 root_dir/EXPORT; 已存在的目标文件直接覆盖。
         返回 {DolphinID: {"copied": n, "missing": [原图名...]}}。"""
-        out_dir = os.path.join(self.root_dir, "EXPORT")
+        out_dir = self.out_dir
         df = self.fin_df
         # 忽略无 DolphinID 的行, 再按 clear==1 过滤
         sub = df.dropna(subset=["DolphinID"])
@@ -105,7 +114,7 @@ class DatabaseExporter:
         For each aspect, select the one with highest clearness among fin image marked by BestInShot.
         """
         #TODO: 排查重复出现的原图
-        out_dir = os.path.join(self.root_dir, "EXPORT")
+        out_dir = self.out_dir
         df = self.fin_df
         sub = df.dropna(subset=["DolphinID", "Aspect"])
         for dph, g in sub.groupby("DolphinID", sort=True):
@@ -142,7 +151,7 @@ class DatabaseExporter:
         Clear=False
         """
         #TODO: 存在没分配 FinID/DphID 的背鳍划入 Social Structure
-        out_dir = os.path.join(self.root_dir, "EXPORT")
+        out_dir = self.out_dir
         # SocialStructure 列按原图写回 (NNxxx 组名); 优先用 PHOTO_METAINFO
         # (一张原图一行), 缺失时退回 FIN_METAINFO
         df = self.fin_df
@@ -158,11 +167,32 @@ class DatabaseExporter:
                 self._copy_orig(o, folder)
         print("Export Photos Grouped by Social Structure, done")
 
+    def export_NOTE_MISC_OTHERS(self, valid_types=None):
+        """把 PHOTO_METAINFO 中 ShotType 属于 valid_types 的照片按类型导出到
+        EXPORT/<ShotType>/ 子文件夹。默认导出 NOTE / SEABIRD / MISC。"""
+        if valid_types is None:
+            valid_types = ["NOTE", "SEABIRD", "MISC"]
+        valid_types = [str(t).strip() for t in valid_types if str(t).strip()]
+        if not valid_types:
+            return
+        photo = self.photo_df
+        if photo is None or photo.empty or "ShotType" not in photo.columns:
+            print("Miss valid ShotType meta info")
+            return
+        sub = photo[photo["ShotType"].astype(str).isin(valid_types)]
+        for stype, g in sub.groupby("ShotType", sort=True):
+            folder = os.path.join(self.out_dir, str(stype))
+            for name in g["PhotoName"].dropna().unique():
+                self._copy_orig(name, folder)
+        print("Export Photos by ShotType, done")
+
     def export(self):
+        self._create_empty_folder()
         self.export_dolphin_images()
         self.export_low_quality_images()
         self.export_best_images()
         self.export_social_structure()
+        self.export_NOTE_MISC_OTHERS()
 
 if __name__ == "__main__":
     import sys

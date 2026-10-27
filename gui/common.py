@@ -10,13 +10,14 @@ from PyQt5.QtWidgets import (
     QApplication, QListWidget, QListWidgetItem, QLabel, QVBoxLayout, QDialog,
     QScrollArea, QMessageBox, QGraphicsView, QGraphicsScene,
     QStyledItemDelegate, QStyle, QStyleOptionViewItem, QShortcut,
-    QHBoxLayout, QPushButton, QMenu,
+    QHBoxLayout, QPushButton, QMenu, QGraphicsRectItem,
+    QGraphicsTextItem, QGraphicsItem,
 )
 from PyQt5.QtGui import (
     QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter,
     QBrush, QColor, QDrag, QPen, QPalette, QKeySequence, QFont,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF, QTimer
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QPointF, QRect, QRectF, QTimer
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 THUMB_SIZE = 256
 # Dolphin 配对鳍格高度: 与格宽保持 18:10, 上下两鳍图无缝相叠不留缝
@@ -353,6 +354,7 @@ class ImageGrid(QListWidget):
         self._cache_dir = None
         self._full_open_exclude = None
         self._full_open_best = None
+        self._box_editor = None
         self._best_in_fin = set()
         # 懒加载: 滚动/缩放后延迟 120ms 只加载可视区域的缩略图
         self._lazy_timer = QTimer(self)
@@ -382,6 +384,19 @@ class ImageGrid(QListWidget):
         """设置大图查看窗口的排除/标记最佳回调。"""
         self._full_open_exclude = exclude
         self._full_open_best = best
+
+    def set_box_editor(self, box_editor):
+        """设置全图查看窗口的鳍框编辑回调。"""
+        self._box_editor = box_editor
+
+    def refresh_path(self, path):
+        """强制重新加载指定路径的缩略图 (框坐标更新后调用)。"""
+        self._loaded.discard(path)
+        self._pending.discard(path)
+        item = self._items.get(path)
+        if item is not None:
+            item.setIcon(QIcon())
+        self._load_visible()
 
     def _drop_ok(self, event):
         if not event.mimeData().hasFormat(MIME_PATHS):
@@ -606,8 +621,181 @@ class ImageGrid(QListWidget):
         dlg = ImageViewerDialog(paths, self.row(item), self, boxes=self._boxes,
                                 labels=self._labels,
                                 on_exclude=self._full_open_exclude,
-                                on_best=self._full_open_best)
+                                on_best=self._full_open_best,
+                                box_editor=self._box_editor)
         dlg.exec_()
+class _HandleItem(QGraphicsRectItem):
+    """ResizableBoxItem 的 8 个拖拽把手 (角 + 边中点)。"""
+
+    HSIZE = 6
+
+    def __init__(self, role, parent):
+        super().__init__(parent)
+        self.role = role
+        self.setAcceptHoverEvents(True)
+        self.setCursor(self._cursor_for(role))
+        self.setBrush(QColor(255, 255, 255))
+        self.setPen(QPen(QColor(0, 0, 0), 1))
+        self.setRect(-self.HSIZE, -self.HSIZE,
+                     self.HSIZE * 2, self.HSIZE * 2)
+
+    def _cursor_for(self, role):
+        if role in ("tl", "br"):
+            return Qt.SizeFDiagCursor
+        if role in ("tr", "bl"):
+            return Qt.SizeBDiagCursor
+        if role in ("t", "b"):
+            return Qt.SizeVerCursor
+        return Qt.SizeHorCursor
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            parent = self.parentItem()
+            if isinstance(parent, ResizableBoxItem):
+                parent._start_handle_drag(self.role, event.scenePos())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        parent = self.parentItem()
+        if isinstance(parent, ResizableBoxItem):
+            parent._do_handle_drag(self.role, event.scenePos())
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        parent = self.parentItem()
+        if isinstance(parent, ResizableBoxItem):
+            parent._end_drag()
+        event.accept()
+
+
+class ResizableBoxItem(QGraphicsRectItem):
+    """可拖拽移动/缩放的鳍框项, 带 8 个把手和类别标签。"""
+
+    MIN_SIZE = 10
+
+    def __init__(self, box, image_w, image_h, parent=None):
+        super().__init__(parent)
+        x0, y0, x1, y1, cls, extra = box
+        self._box = box
+        self._image_w = image_w
+        self._image_h = image_h
+        self._cls = cls.lstrip("_") if isinstance(cls, str) else cls
+        self._extra = extra
+        self.setRect(QRectF(float(x0), float(y0),
+                            max(1, float(x1) - float(x0)),
+                            max(1, float(y1) - float(y0))))
+        color = BOX_COLORS.get(self._cls, Qt.yellow)
+        self.setPen(QPen(color, max(2, min(image_w, image_h) // 400)))
+        self.setAcceptHoverEvents(True)
+        self._handles = {}
+        for role in ("tl", "t", "tr", "r", "br", "b", "bl", "l"):
+            self._handles[role] = _HandleItem(role, self)
+        self._label = QGraphicsTextItem(self)
+        self._label.setDefaultTextColor(color)
+        font = self._label.font()
+        font.setPixelSize(max(12, min(image_w, image_h) // 40))
+        font.setBold(True)
+        self._label.setFont(font)
+        self._label.setPlainText(self._label_text())
+        self._update_handles()
+        self._update_label()
+        self._handle_drag_role = None
+        self._body_drag = False
+        self._drag_start_mouse = None
+        self._drag_start_rect = None
+
+    def _label_text(self):
+        text = self._cls if self._cls else ""
+        if self._extra:
+            text = "%s %s" % (text, self._extra) if text else self._extra
+        return text
+
+    def _update_handles(self):
+        r = self.rect()
+        self._handles["tl"].setPos(r.left(), r.top())
+        self._handles["t"].setPos(r.left() + r.width() / 2, r.top())
+        self._handles["tr"].setPos(r.right(), r.top())
+        self._handles["r"].setPos(r.right(), r.top() + r.height() / 2)
+        self._handles["br"].setPos(r.right(), r.bottom())
+        self._handles["b"].setPos(r.left() + r.width() / 2, r.bottom())
+        self._handles["bl"].setPos(r.left(), r.bottom())
+        self._handles["l"].setPos(r.left(), r.top() + r.height() / 2)
+
+    def _update_label(self):
+        r = self.rect()
+        h = self._label.boundingRect().height()
+        self._label.setPos(r.left(), max(0, r.top() - h - 2))
+
+    def _clamp(self, x, y):
+        return (max(0, min(self._image_w, x)),
+                max(0, min(self._image_h, y)))
+
+    def _start_handle_drag(self, role, pos):
+        self._handle_drag_role = role
+        self._drag_start_rect = self.rect()
+        self._do_handle_drag(role, pos)
+
+    def _do_handle_drag(self, role, pos):
+        x, y = self._clamp(pos.x(), pos.y())
+        r = self._drag_start_rect
+        left, top, right, bottom = r.left(), r.top(), r.right(), r.bottom()
+        if "l" in role:
+            left = min(x, right - self.MIN_SIZE)
+        if "r" in role:
+            right = max(x, left + self.MIN_SIZE)
+        if "t" in role:
+            top = min(y, bottom - self.MIN_SIZE)
+        if "b" in role:
+            bottom = max(y, top + self.MIN_SIZE)
+        new_rect = QRectF(left, top, right - left, bottom - top)
+        self.setRect(new_rect)
+        self._update_handles()
+        self._update_label()
+
+    def _start_body_drag(self, pos):
+        self._body_drag = True
+        self._drag_start_mouse = pos
+        self._drag_start_rect = self.rect()
+
+    def _do_body_drag(self, pos):
+        delta = pos - self._drag_start_mouse
+        r = self._drag_start_rect
+        new_x = r.x() + delta.x()
+        new_y = r.y() + delta.y()
+        new_x = max(0, min(self._image_w - r.width(), new_x))
+        new_y = max(0, min(self._image_h - r.height(), new_y))
+        self.setRect(new_x, new_y, r.width(), r.height())
+        self._update_handles()
+        self._update_label()
+
+    def _end_drag(self):
+        self._handle_drag_role = None
+        self._body_drag = False
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._start_body_drag(event.scenePos())
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._body_drag:
+            self._do_body_drag(event.scenePos())
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._body_drag:
+            self._end_drag()
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+
 class ZoomableView(QGraphicsView):
     """滚轮缩放(以光标为中心), 左键拖拽平移, 双击适应窗口。"""
 
@@ -641,10 +829,11 @@ class ZoomableView(QGraphicsView):
 
 class ImageViewerDialog(QDialog):
     """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小, Ctrl+W 关闭。
-    可选 on_exclude / on_best 回调, 在大图窗口中按 Delete 或右键排除/标记最佳。"""
+    可选 on_exclude / on_best 回调, 在大图窗口中按 Delete 或右键排除/标记最佳。
+    传入 box_editor 后, 右键可进入鳍框编辑模式 (移动/缩放框并保存)。"""
 
     def __init__(self, paths, index, parent=None, boxes=None, labels=None,
-                 on_exclude=None, on_best=None):
+                 on_exclude=None, on_best=None, box_editor=None):
         super().__init__(parent)
         self._paths = paths
         self._index = index
@@ -652,6 +841,10 @@ class ImageViewerDialog(QDialog):
         self._labels = labels or {}
         self._on_exclude = on_exclude
         self._on_best = on_best
+        self._box_editor = box_editor
+        self._edit_mode = False
+        self._edit_items = []
+        self._edit_original_rects = []
         self.resize(1200, 800)
 
         self._scene = QGraphicsScene(self)
@@ -687,7 +880,79 @@ class ImageViewerDialog(QDialog):
         if not pm.isNull():
             self.view.fitInView(self._scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
+    def _enter_edit_mode(self):
+        """进入框编辑模式: 显示无框原图, 并在其上放置可交互框。"""
+        self._edit_mode = True
+        path = self._paths[self._index]
+        reader = QImageReader(path)
+        pm = QPixmap.fromImage(reader.read())
+        if not pm.isNull():
+            self._item.setPixmap(pm)
+        self.view.setDragMode(QGraphicsView.NoDrag)
+        boxes = self._boxes.get(path, [])
+        self._edit_original_rects = []
+        self._edit_items = []
+        w = pm.width() if not pm.isNull() else 0
+        h = pm.height() if not pm.isNull() else 0
+        for box in boxes:
+            rb = ResizableBoxItem(box, w, h)
+            self._scene.addItem(rb)
+            self._edit_items.append(rb)
+            self._edit_original_rects.append(rb.rect())
+        self._scene.setSceneRect(self._scene.itemsBoundingRect())
+
+    def _exit_edit_mode(self, save=False):
+        """退出编辑模式; save=True 时将改动写回数据集。"""
+        path = self._paths[self._index]
+        if save and self._box_editor is not None:
+            boxes = self._boxes.get(path, [])
+            for i, rb in enumerate(self._edit_items):
+                if i >= len(boxes):
+                    continue
+                r = rb.rect()
+                orig = self._edit_original_rects[i]
+                if r == orig:
+                    continue
+                old_box = boxes[i]
+                new_box = (int(r.left()), int(r.top()),
+                           int(r.right()), int(r.bottom()),
+                           old_box[4], old_box[5])
+                updated = self._box_editor(path, "update", i, new_box)
+                if updated is not None:
+                    self._boxes[path] = updated
+        for item in self._edit_items:
+            self._scene.removeItem(item)
+        self._edit_items = []
+        self._edit_original_rects = []
+        self._edit_mode = False
+        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self._show(self._index)
+
     def keyPressEvent(self, event):
+        if self._edit_mode:
+            if event.key() == Qt.Key_Escape:
+                self._exit_edit_mode(save=False)
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Left, Qt.Key_Right):
+                # 编辑时禁止翻页
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Equal, Qt.Key_Plus):
+                self.view.zoom(1.25)
+                event.accept()
+                return
+            if event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
+                self.view.zoom(0.8)
+                event.accept()
+                return
+            if event.key() == Qt.Key_W and \
+                    event.modifiers() & Qt.ControlModifier:
+                self.close()
+                event.accept()
+                return
+            super().keyPressEvent(event)
+            return
         if event.key() == Qt.Key_Left:
             self._show(self._index - 1)   # 上一张
         elif event.key() == Qt.Key_Right:
@@ -711,16 +976,27 @@ class ImageViewerDialog(QDialog):
             super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
-        """右键菜单: 排除 / 标记最佳 (仅在传入回调时显示)。"""
+        """右键菜单: 编辑框 / 排除 / 标记最佳; 编辑模式下显示保存/取消。"""
         menu = QMenu(self)
-        if self._on_exclude is not None:
-            act = menu.addAction("Exclude (Delete)")
-            act.triggered.connect(
-                lambda: self._on_exclude([self._paths[self._index]])
-                or self.close())
-        if self._on_best is not None:
-            act = menu.addAction("Mark Best Fin (B)")
-            act.triggered.connect(
-                lambda: self._on_best([self._paths[self._index]]))
+        if self._edit_mode:
+            act = menu.addAction("Save changes")
+            act.triggered.connect(lambda: self._exit_edit_mode(save=True))
+            act = menu.addAction("Cancel")
+            act.triggered.connect(lambda: self._exit_edit_mode(save=False))
+        else:
+            path = self._paths[self._index]
+            boxes = self._boxes.get(path)
+            if self._box_editor is not None and boxes:
+                act = menu.addAction("Edit boxes")
+                act.triggered.connect(self._enter_edit_mode)
+            if self._on_exclude is not None:
+                act = menu.addAction("Exclude (Delete)")
+                act.triggered.connect(
+                    lambda: self._on_exclude([self._paths[self._index]])
+                    or self.close())
+            if self._on_best is not None:
+                act = menu.addAction("Mark Best Fin (B)")
+                act.triggered.connect(
+                    lambda: self._on_best([self._paths[self._index]]))
         if not menu.isEmpty():
             menu.exec_(event.globalPos())

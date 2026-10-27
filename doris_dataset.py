@@ -68,6 +68,43 @@ class Dataset:
                                        for n in g["PhotoName"]]
         return groups
 
+    def set_shot_type(self, shot_id, shot_type):
+        """把指定 ShotID 的全部照片设置为 shot_type, 写回 PHOTO_METAINFO.csv。"""
+        if self.photo_df.empty or "ShotID" not in self.photo_df.columns:
+            return
+        if "ShotType" not in self.photo_df.columns:
+            self.photo_df["ShotType"] = ""
+        mask = self.photo_df["ShotID"].astype(str) == str(shot_id)
+        if not mask.any():
+            return
+        self.photo_df.loc[mask, "ShotType"] = str(shot_type)
+        self._save_csv(self.photo_df, "PHOTO_METAINFO.csv")
+
+    def shot_info(self, shot_id):
+        """返回指定 ShotID 第一张图的信息字典:
+        datetime, focus_length, distance, shot_type。"""
+        info = {"datetime": None, "focus_length": None,
+                "distance": None, "shot_type": ""}
+        if self.photo_df.empty or "ShotID" not in self.photo_df.columns:
+            return info
+        sub = self.photo_df[self.photo_df["ShotID"].astype(str) == str(shot_id)]
+        if sub.empty:
+            return info
+        first = sub.iloc[0]
+        if "Datetimesec" in first and not pd.isna(first["Datetimesec"]):
+            info["datetime"] = str(first["Datetimesec"])
+        if "FocusLength35mm" in first and not pd.isna(first["FocusLength35mm"]):
+            info["focus_length"] = first["FocusLength35mm"]
+        if "FocusPosition2" in first and not pd.isna(first["FocusPosition2"]) \
+                and "FocusLength35mm" in first \
+                and not pd.isna(first["FocusLength35mm"]):
+            fp2 = float(first["FocusPosition2"])
+            fl = float(first["FocusLength35mm"])
+            info["distance"] = (2 ** ((fp2 / 16 - 5) + 1)) * (fl / 1000)
+        if "ShotType" in first and not pd.isna(first["ShotType"]):
+            info["shot_type"] = str(first["ShotType"])
+        return info
+
     def fin_boxes(self, dolphin_id=False):
         """全图绝对路径 -> [(x0, y0, x1, y1, cls, extra), ...] (stored 像素坐标)
         extra 为叠加文字 (FinID 'F3' 和/或 Clearness '0.87'), 都没有时为 None。
@@ -510,22 +547,29 @@ class Dataset:
                                   key=lambda f: (-counts[f], num(f)))]
 
     def fin_id_shot_counts(self):
-        """[(label, count)]: 每个 FinID 出现的不同 shot 数 (按 ShotID 去重),
-        排序与 fin_id_counts 一致; 不含 FinID0。"""
+        """[(label, dl_shots, dr_shots)]: 每个 FinID 在 DL/DR 上出现的
+        不同 shot 数, 按总数降序; 不含 FinID0。"""
         if self.fin_df.empty or "FinID" not in self.fin_df.columns \
-                or "ShotID" not in self.fin_df.columns:
+                or "ShotID" not in self.fin_df.columns \
+                or "Aspect" not in self.fin_df.columns:
             return []
-        df = self.fin_df.dropna(subset=["FinID", "ShotID"])
-        counts = df.groupby("FinID")["ShotID"].nunique()
-        counts = counts[[fid for fid in counts.index if fid != 0]]
+        df = self.fin_df.dropna(subset=["FinID", "ShotID", "Aspect"])
+        df = df[df["FinID"] != 0]
+        counts = df.groupby(["FinID", "Aspect"])["ShotID"].nunique().unstack(
+            fill_value=0)
+        counts = counts.reindex(columns=["DL", "DR"], fill_value=0)
+        counts["total"] = counts["DL"] + counts["DR"]
+        counts = counts.sort_values("total", ascending=False).drop(
+            columns="total")
         def num(fid):
             try:
                 return float(fid)
             except (TypeError, ValueError):
                 return float("inf")
-        return [("FinID%s" % fid, int(counts[fid]))
-                for fid in sorted(counts.index,
-                                  key=lambda f: (-counts[f], num(f)))]
+        return [("FinID%s" % fid, int(row["DL"]), int(row["DR"]))
+                for fid, row in sorted(counts.iterrows(),
+                                       key=lambda item: (-item[1].sum(),
+                                                         num(item[0])))]
 
     def aspect_counts(self):
         """[(label, count)]: 各部位类别的鳍图数。"""
@@ -957,6 +1001,111 @@ class Dataset:
         return out_fids, paths, labels
 
     # ------------------------------------------------------------------
+    # 鳍框编辑: 在全图查看器中调整框坐标并同步裁剪图
+    # ------------------------------------------------------------------
+    def update_fin_box(self, path, old_box, new_box):
+        """更新 FIN_METAINFO.csv 中指定原图的单个鳍框坐标。
+
+        path: 原图绝对路径; old_box/new_box: (x0, y0, x1, y1, cls, extra)。
+        按 PhotoName + 原坐标定位唯一行, 写入新坐标后保存 CSV。
+        返回该图更新后的鳍框列表 (来自 fin_boxes())。
+        """
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
+            return []
+        name = os.path.basename(path)
+        x0, y0, x1, y1, cls, _ = old_box
+        cls = cls.lstrip("_") if isinstance(cls, str) else cls
+        need = ["XMin", "YMin", "XMax", "YMax"]
+        if not all(c in self.fin_df.columns for c in need):
+            return []
+        mask = self.fin_df["PhotoName"] == name
+        for col, val in zip(need, [x0, y0, x1, y1]):
+            mask = mask & (
+                self.fin_df[col].astype(float).round().astype(int) == int(val))
+        if "Aspect" in self.fin_df.columns and cls is not None:
+            mask = mask & (self.fin_df["Aspect"] == cls)
+        if not mask.any():
+            return []
+        idx = self.fin_df[mask].index[0]
+        nx0, ny0, nx1, ny1, _, _ = new_box
+        self.fin_df.loc[idx, "XMin"] = int(nx0)
+        self.fin_df.loc[idx, "YMin"] = int(ny0)
+        self.fin_df.loc[idx, "XMax"] = int(nx1)
+        self.fin_df.loc[idx, "YMax"] = int(ny1)
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        return self.fin_boxes().get(path, [])
+
+    def regenerate_fin_crop(self, path, box):
+        """按新框坐标重新生成并覆盖 FIN/ 下的裁剪鳍图。
+
+        返回保存的裁剪图绝对路径; 若 FIN_METAINFO 中无对应行则返回 None。
+        """
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
+            return None
+        name = os.path.basename(path)
+        x0, y0, x1, y1, cls, _ = box
+        cls = cls.lstrip("_") if isinstance(cls, str) else cls
+        need = ["XMin", "YMin", "XMax", "YMax"]
+        if not all(c in self.fin_df.columns for c in need):
+            return None
+        mask = self.fin_df["PhotoName"] == name
+        for col, val in zip(need, [x0, y0, x1, y1]):
+            mask = mask & (
+                self.fin_df[col].astype(float).round().astype(int) == int(val))
+        if "Aspect" in self.fin_df.columns and cls is not None:
+            mask = mask & (self.fin_df["Aspect"] == cls)
+        if not mask.any():
+            return None
+        idx = self.fin_df[mask].index[0]
+        row = self.fin_df.loc[idx]
+
+        try:
+            from PIL import Image
+            img = Image.open(path)
+        except Exception:
+            import cv2
+            img = cv2.imread(path)
+            if img is None:
+                return None
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(img)
+        w, h = img.size
+        x0 = max(0, min(w, int(x0)))
+        y0 = max(0, min(h, int(y0)))
+        x1 = max(x0 + 1, min(w, int(x1)))
+        y1 = max(y0 + 1, min(h, int(y1)))
+        crop = img.crop((x0, y0, x1, y1))
+
+        rel_path = row.get("Path") if "Path" in row.index else None
+        if isinstance(rel_path, str) and rel_path:
+            out_rel = rel_path
+        else:
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in (".jpg", ".jpeg", ".png"):
+                ext = ".jpg"
+            sub = self.fin_df[self.fin_df["PhotoName"] == name]
+            pos = sub.index.get_loc(idx)
+            try:
+                pos = int(pos)
+            except Exception:
+                pos = 0
+            out_rel = "FIN/%s_FIN%02d%s" % (
+                os.path.splitext(name)[0], pos, ext)
+            self.fin_df.loc[idx, "Path"] = out_rel
+        out_abs = os.path.join(self.root, out_rel)
+        os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+        crop.save(out_abs)
+        self.fin_df.loc[idx, "fullpath"] = out_abs
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        return out_abs
+
+    def edit_fin_box(self, path, old_box, new_box):
+        """更新鳍框坐标并重新生成对应裁剪图。返回该图更新后的框列表。"""
+        self.update_fin_box(path, old_box, new_box)
+        self.regenerate_fin_crop(path, new_box)
+        return self.fin_boxes().get(path, [])
+
+    # ------------------------------------------------------------------
     # 拖拽改组: 只更新 dataframe 并写回 CSV, 不移动/重命名任何文件
     # ------------------------------------------------------------------
     def _save_csv(self, df, fname):
@@ -1000,6 +1149,28 @@ class Dataset:
         self.fin_df.loc[mask, "Aspect"] = cls
         self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return {p: p for p in paths}
+
+    def move_track_aspect(self, paths, group):
+        """改部位类别: 同 ShotID+TrackIDInShot 的鳍一起更新 Aspect。"""
+        cls = {v: k for k, v in ASPECT_LABELS.items()}.get(group, group)
+        mask = self.fin_df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        if "TrackIDInShot" in self.fin_df.columns \
+                and "ShotID" in self.fin_df.columns:
+            key_rows = self.fin_df.loc[
+                mask, ["ShotID", "TrackIDInShot"]].dropna()
+            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
+            if pairs:
+                row_keys = pd.Series(
+                    list(zip(self.fin_df["ShotID"],
+                             self.fin_df["TrackIDInShot"])),
+                    index=self.fin_df.index)
+                mask = mask | row_keys.isin(pairs)
+        self.fin_df.loc[mask, "Aspect"] = cls
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
 
     def move_blur(self, paths, group):
         """改质量分组: 更新 Clear / clear 列 (True=Clear, False=Blur, 空=Mid)。"""
@@ -1151,7 +1322,8 @@ class Dataset:
         return self._assign_fin_id_to_mask(mask, fid)
 
     def move_selected_to_fin_id(self, paths, group):
-        """只把被选中的鳍图移到目标 FinID, 不扩展同 track, 不改动 DolphinID。"""
+        """只把被选中的鳍图移到目标 FinID, 不扩展同 track;
+        DolphinID 按目标 FinID 同步/清除。"""
         m = re.match(r"FinID(.+)$", group)
         if not m:
             return {}
@@ -1165,7 +1337,7 @@ class Dataset:
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        return self._assign_fin_id_to_mask(mask, fid, sync_dolphin=False)
+        return self._assign_fin_id_to_mask(mask, fid, sync_dolphin=True)
 
     # ------------------------------------------------------------------
     # 三栏模式排除区: 相似度置 0 并持久化到 FIN_SIMILARITY.npy

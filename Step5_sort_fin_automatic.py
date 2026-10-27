@@ -162,7 +162,8 @@ class FinSorter:
     def automatic_link_fin_by_shot_group(self,
                                         gate_dist=DEFAULT_GATE_DIST,
                                         max_age=DEFAULT_MAX_AGE,
-                                        same_class_only=False):
+                                        same_class_only=False,
+                                        split_threshold=None):
         """
         Must-link: track fins frame-by-frame within each burst (shot_id)
         with a SORT-style tracker (constant-velocity Kalman filter +
@@ -171,8 +172,12 @@ class FinSorter:
         from PHOTO_METAINFO.csv (see _load_cumulative_offsets), so the
         Kalman filter only has to model dolphin motion; Hungarian
         enforces one-to-one matching so one fin cannot be linked to two
-        different dolphins. All members of a track get pairwise
-        similarity 1 so clustering always links them.
+        different dolphins.
+
+        After tracking, each track is optionally split at frame pairs whose
+        cosine similarity is below split_threshold; only sub-tracks keep
+        the must-link similarity=1 edges.
+
         Args:
             gate_dist: Max pixel distance between the predicted center and
                 a detection center for a match candidate.
@@ -181,8 +186,12 @@ class FinSorter:
                 only link fins of the same class. Uses 'class_corrected'
                 when available (see correct_fin_class_by_shot), otherwise
                 the raw 'class' column.
+            split_threshold: Cosine similarity threshold below which a track
+                is split. None means no splitting.
         """
         print("Linking fin based on shot group with Kalman + Hungarian. ")
+        if split_threshold is None:
+            split_threshold = self.threshold
         class_col = "Aspect"
         img_col = "PhotoName"
         if "ShotID" not in self.metainfo.columns:
@@ -198,19 +207,42 @@ class FinSorter:
                                       gate_dist, max_age, same_class_only,
                                       offsets)
             for track in tracks:
-                track_count += 1
-                for fin in track:
-                    track_id_list[fin] = track_count
-                if len(track) < 2:
-                    continue
-                for i in range(len(track)):
-                    for j in range(i + 1, len(track)):
-                        self.similarity[track[i], track[j]] = 1
-                        self.similarity[track[j], track[i]] = 1
+                for sub in self._split_track_by_similarity(shot, track,
+                                                           split_threshold):
+                    track_count += 1
+                    for fin in sub:
+                        track_id_list[fin] = track_count
+                    if len(sub) < 2:
+                        continue
+                    for i in range(len(sub)):
+                        for j in range(i + 1, len(sub)):
+                            self.similarity[sub[i], sub[j]] = 1
+                            self.similarity[sub[j], sub[i]] = 1
         self.metainfo["TrackIDInShot"] = track_id_list
         print("Total %d tracks in %d shot"
               % (track_count, len(self.metainfo["ShotID"].unique())))
 
+    def _split_track_by_similarity(self, shot, track, threshold):
+        """按 shot 内帧顺序对 track 排序，相邻成员相似度低于 threshold
+        处拆分成多个子 track。"""
+        #TODO: 重新连接断开的？
+        if len(track) < 2:
+            return [track]
+        photo_order = sorted(shot["PhotoName"].unique())
+        order = {name: i for i, name in enumerate(photo_order)}
+
+        def frame_order(idx):
+            photo = self.metainfo.loc[idx, "PhotoName"]
+            return order.get(photo, -1)
+
+        sorted_track = sorted(track, key=frame_order)
+        subs = [[sorted_track[0]]]
+        for i in range(1, len(sorted_track)):
+            a, b = sorted_track[i - 1], sorted_track[i]
+            if self.similarity[a, b] < threshold:
+                subs.append([])
+            subs[-1].append(b)
+        return [s for s in subs if s]
 
     def _track_shot(self, shot, photo_col, class_col,
                     gate_dist, max_age, same_class_only, offsets=None):

@@ -1,0 +1,32 @@
+# Python dependencies for the Doris dolphin re-identification project.
+# Detected from project source imports. Install with:
+#     pip install -r requirements.txt
+
+# Core data / image processing
+numpy
+pandas
+Pillow
+opencv-python
+
+# Deep learning
+# NOTE: torch/torchvision versions below include CUDA 12.8 support.
+# For CPU-only or a different CUDA version, install the appropriate wheel from
+# https://pytorch.org/get-started/locally/ instead.
+#torch==2.9.1+cu128
+#torchvision==0.24.1+cu128
+timm
+ultralytics
+
+# EXIF metadata reading
+pyexiv2
+
+# Utilities / visualization
+matplotlib
+networkx
+tqdm
+scikit-learn
+PyQt5
+
+# Deprecated / optional scripts also reference the following, kept here for
+# completeness if you need to run code under deprecated/:
+# tensorflow

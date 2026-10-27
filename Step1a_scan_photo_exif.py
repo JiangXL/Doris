@@ -38,7 +38,7 @@ class ExifScanner:
                 subsectime = metadata["Exif.Photo.SubSecTimeOriginal"]
                 row["Datetimesec"] = f"{datetime}.{subsectime}"
                 row["Exposure"] = metadata["Exif.Photo.ExposureTime"]
-                row["Focuslength35mm"] = int(metadata["Exif.Photo.FocalLengthIn35mmFilm"])
+                row["FocusLength35mm"] = int(metadata["Exif.Photo.FocalLengthIn35mmFilm"])
             self.photo_df.loc[len(self.photo_df)] = row
 
     def group_shot_by_timestamp(self, gap_threshold_s=0.15):
