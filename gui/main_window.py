@@ -89,6 +89,7 @@ class MainWindow(QMainWindow):
         self._dashboard.root_changed.connect(self.load)
         self._dashboard.scan_finished.connect(lambda: self.load(self.root))
         self._dashboard.locate_finished.connect(lambda: self.load(self.root))
+        self._dashboard.filter_finished.connect(lambda: self.load(self.root))
         self._dashboard.cluster_finished.connect(lambda: self.load(self.root))
         self._dashboard.set_root(root)
         self.tabs.addTab(self._dashboard, "Dashboard")
@@ -132,11 +133,14 @@ class MainWindow(QMainWindow):
                 if title == "Continuous Shots" else None,
                 box_editor=self._edit_box
                 if title in fin_tabs or title == "Continuous Shots" else None,
+                photo_type_setter=ds.set_photo_type,
                 exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
                 if title == "Fin ID" else None,
                 overview_provider=ds.fin_id_previews
                 if title == "Fin ID" else None,
-                merger=ds.merge_fin_paths if title == "Fin ID" else None)
+                merger=ds.merge_fin_paths if title == "Fin ID" else None,
+                similar_mover=ds.move_to_fin_id
+                if title == "Fin ID" else None)
             groups = fn()
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
                 groups = {k: v for k, v in groups.items() if len(v) > 0}
@@ -211,6 +215,7 @@ class MainWindow(QMainWindow):
             clear_mark=ds.fin_clear_marks().__contains__,
             best_marker=ds.mark_best_fins,
             best_in_fin_provider=ds.fin_best_in_fin_marks,
+            photo_type_setter=ds.set_photo_type,
             on_moved=self._refresh_tabs)
         groups = ds.dolphin_groups()
         if groups:
@@ -241,7 +246,7 @@ class MainWindow(QMainWindow):
         else:
             tab_social.grid.show_images([])
             QListWidgetItem("(no data)", tab_social.group_list)
-        idx = self.tabs.addTab(tab_social, "Social Structure")
+        idx = self.tabs.addTab(tab_social, "Subgroup")
         self._group_tabs.append(("Social Structure", tab_social, ds.social))
         self._tab_requires[idx] = "FIN_METAINFO.csv"
 
@@ -251,7 +256,7 @@ class MainWindow(QMainWindow):
         self._stats_tab.show_stats(
             ds.fin_id_counts(), ds.fin_id_shot_counts(), ds.aspect_counts(),
             ds.clearness_values(), ds.dolphin_shot_counts(),
-            ds.social_network_data())
+            ds.social_network_data(), ds.traffic_data())
         idx = self.tabs.addTab(self._stats_tab, "Statistics")
         self._tab_requires[idx] = "FIN_METAINFO.csv"
 
@@ -348,7 +353,7 @@ class MainWindow(QMainWindow):
                 self.ds.fin_id_counts(), self.ds.fin_id_shot_counts(),
                 self.ds.aspect_counts(), self.ds.clearness_values(),
                 self.ds.dolphin_shot_counts(),
-                self.ds.social_network_data())
+                self.ds.social_network_data(), self.ds.traffic_data())
 
     def _edit_box(self, path, action, index, new_box=None):
         """全图查看器的鳍框编辑回调: 更新 CSV 与裁剪图, 并刷新相关 tab 缩略图。"""
@@ -358,8 +363,9 @@ class MainWindow(QMainWindow):
         old_box = old_boxes[index]
         if action == "update" and new_box is not None:
             self.ds.edit_fin_box(path, old_box, new_box)
+            fin_tabs = {"Fin Aspect", "Blur", "Fin ID", "Continuous Shots"}
             for title, tab, fn in self._group_tabs:
-                if title in ("Continuous Shots", "Social Structure"):
+                if title in fin_tabs or title == "Social Structure":
                     dolphin_id = (title == "Social Structure")
                     tab._boxes[path] = self.ds.fin_boxes(
                         dolphin_id=dolphin_id).get(path, [])

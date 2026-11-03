@@ -200,7 +200,7 @@ if __name__ == "__main__":
     cpu_num = os.cpu_count()
     if torch.cuda.is_available(): # gpu 
         print("Using GPU")
-        batch = 32
+        batch = 64
         decode = int(cpu_num * 0.8)
         prefetch = 3*cpu_num
     else: # cpu only

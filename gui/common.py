@@ -128,6 +128,12 @@ class ThumbLoader(QThread):
     def stop(self):
         self._stop = True
 
+    @staticmethod
+    def _is_fin_image(p):
+        """路径是否在 FIN/ 目录下 (鳍图裁剪文件)。"""
+        parts = re.split(r"[\\/]", os.path.normpath(p))
+        return "FIN" in parts
+
     def _cache_path(self, p, w=None, h=None):
         key = hashlib.md5(p.encode()).hexdigest()[:10]
         if w is None:  # 查找已有缓存
@@ -146,8 +152,10 @@ class ThumbLoader(QThread):
                             "%s_%dx%d_%s.jpg" % (key, w, h, os.path.basename(p))), w, h
 
     def _load_clean(self, p):
-        """读干净缩略图(不带框/标签), 优先磁盘缓存。返回 (img, orig_w, orig_h)。"""
-        if self._cache_dir:
+        """读干净缩略图(不带框/标签), 优先磁盘缓存。返回 (img, orig_w, orig_h)。
+        FIN/ 下的鳍图裁剪文件不读写磁盘缓存, 直接在内存中处理。"""
+        use_cache = self._cache_dir and not self._is_fin_image(p)
+        if use_cache:
             cp, ow, oh = self._cache_path(p)
             try:
                 if cp and os.path.getmtime(cp) >= os.path.getmtime(p):
@@ -172,7 +180,7 @@ class ThumbLoader(QThread):
         sz.scale(self._thumb_size, self._thumb_size, Qt.KeepAspectRatio)
         reader.setScaledSize(sz)
         img = reader.read()
-        if not img.isNull() and self._cache_dir:
+        if not img.isNull() and use_cache:
             try:
                 os.makedirs(self._cache_dir, exist_ok=True)
                 cp, _, _ = self._cache_path(p, stored_w, stored_h)
@@ -249,12 +257,8 @@ class DolphinLoader(ThumbLoader):
             f.setBold(True)
             p.setFont(f)
             if fid is not None:  # 每格左下角标 DL/DR, 右侧标对应 FinID
-                try:  # FinID 常被读成浮点, 显示为整数
-                    fid_s = str(int(float(fid)))
-                except (TypeError, ValueError):
-                    fid_s = str(fid)
-                p.drawText(6, y0 + cell - 8,
-                           "FinID_%s" % (fid_s))
+                fid_s = str(fid)
+                p.drawText(6, y0 + cell - 8, fid_s)
         # 海豚编号居中叠在上下背鳍之间 (半透明底条保证可读)
         f = p.font()
         f.setPixelSize(16)
@@ -354,6 +358,7 @@ class ImageGrid(QListWidget):
         self._cache_dir = None
         self._full_open_exclude = None
         self._full_open_best = None
+        self._full_open_move = None
         self._box_editor = None
         self._best_in_fin = set()
         # 懒加载: 滚动/缩放后延迟 120ms 只加载可视区域的缩略图
@@ -380,10 +385,11 @@ class ImageGrid(QListWidget):
         """允许/禁止在同网格内拖放到另一张图上 (Overview 模式合并用)。"""
         self._accept_self_drops = on
 
-    def set_full_open_callbacks(self, exclude=None, best=None):
-        """设置大图查看窗口的排除/标记最佳回调。"""
+    def set_full_open_callbacks(self, exclude=None, best=None, move=None):
+        """设置大图查看窗口的排除/标记最佳/Alt+N 移组回调。"""
         self._full_open_exclude = exclude
         self._full_open_best = best
+        self._full_open_move = move
 
     def set_box_editor(self, box_editor):
         """设置全图查看窗口的鳍框编辑回调。"""
@@ -622,6 +628,7 @@ class ImageGrid(QListWidget):
                                 labels=self._labels,
                                 on_exclude=self._full_open_exclude,
                                 on_best=self._full_open_best,
+                                on_move=self._full_open_move,
                                 box_editor=self._box_editor)
         dlg.exec_()
 class _HandleItem(QGraphicsRectItem):
@@ -829,11 +836,13 @@ class ZoomableView(QGraphicsView):
 
 class ImageViewerDialog(QDialog):
     """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小, Ctrl+W 关闭。
-    可选 on_exclude / on_best 回调, 在大图窗口中按 Delete 或右键排除/标记最佳。
+    可选 on_exclude / on_best / on_misc 回调, 在大图窗口中按 Delete / B / M
+    或右键排除/标记最佳/标记 PhotoType 为 MISC。
     传入 box_editor 后, 右键可进入鳍框编辑模式 (移动/缩放框并保存)。"""
 
     def __init__(self, paths, index, parent=None, boxes=None, labels=None,
-                 on_exclude=None, on_best=None, box_editor=None):
+                 on_exclude=None, on_best=None, on_misc=None, on_move=None,
+                 box_editor=None):
         super().__init__(parent)
         self._paths = paths
         self._index = index
@@ -841,6 +850,8 @@ class ImageViewerDialog(QDialog):
         self._labels = labels or {}
         self._on_exclude = on_exclude
         self._on_best = on_best
+        self._on_misc = on_misc
+        self._on_move = on_move
         self._box_editor = box_editor
         self._edit_mode = False
         self._edit_items = []
@@ -972,6 +983,17 @@ class ImageViewerDialog(QDialog):
         elif event.key() == Qt.Key_B and self._on_best is not None:
             self._on_best([self._paths[self._index]])
             event.accept()
+        elif event.key() == Qt.Key_M and self._on_misc is not None:
+            self._on_misc([self._paths[self._index]])
+            event.accept()
+        elif event.modifiers() & Qt.AltModifier and self._on_move is not None:
+            # Alt+1..9: 移入第 N 个分组
+            key = event.key()
+            if Qt.Key_1 <= key <= Qt.Key_9:
+                self._on_move(self._paths[self._index], key - Qt.Key_1)
+                event.accept()
+                return
+            super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
 
@@ -998,5 +1020,9 @@ class ImageViewerDialog(QDialog):
                 act = menu.addAction("Mark Best Fin (B)")
                 act.triggered.connect(
                     lambda: self._on_best([self._paths[self._index]]))
+            if self._on_misc is not None:
+                act = menu.addAction("Mark MISC (M)")
+                act.triggered.connect(
+                    lambda: self._on_misc([self._paths[self._index]]))
         if not menu.isEmpty():
             menu.exec_(event.globalPos())

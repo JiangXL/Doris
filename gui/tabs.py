@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """通用分组页、统计页与 Dashboard 页。"""
 
+import io
 import os
 import re
+import runpy
 import sys
 import shutil
+import threading
 import hashlib
 from datetime import datetime
 
@@ -102,7 +105,8 @@ class GroupedTab(QWidget):
                  overview_provider=None, merger=None, clear_mark=None,
                  best_marker=None, best_in_fin_provider=None, renamer=None,
                  track_move_checkbox=False, shot_type_setter=None,
-                 shot_info_provider=None, box_editor=None, parent=None):
+                 shot_info_provider=None, box_editor=None,
+                 photo_type_setter=None, similar_mover=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -127,15 +131,18 @@ class GroupedTab(QWidget):
         merger: callable(src_paths, target_path) 或 None; 给定后 Overview 模式
         下可把代表鳍图拖放到另一张上, 合并两个 FinID (含对应 DolphinID)
         renamer: callable() -> dict; 给定后顶栏出现 "Rename ID" 按钮,
-        把所有 FinID 重新编号为 1..N (N=FinID 数量)
+        把所有 FinID 重新编号为 Fin001..FinNNN (N=FinID 数量)
         track_move_checkbox: True 时顶栏出现 "Move whole track" 复选框,
         默认勾选; Review 模式下侧边拖放勾选时移动同 track, 未勾选时只移动选中图
         shot_type_setter: callable(shot_id, shot_type); 给定后顶栏出现 ShotType
         下拉框, 供 Continuous Shots 页为整组连拍设置类型
         shot_info_provider: callable(shot_id) -> dict; 给定后顶栏显示该 shot
-        第一张图的 DateTime/FocusLength35mm/Distance 信息"""
+        第一张图的 DateTime/FocusLength35mm/Distance 信息
+        photo_type_setter: callable(paths, photo_type); 给定后原图查看窗口右键
+        菜单出现 "Mark MISC", 将对应照片的 PhotoType 列写回 PHOTO_METAINFO.csv"""
         super().__init__(parent)
         self._mover = mover
+        self._similar_mover = similar_mover
         self._track_mover = track_mover
         self._exclude = exclude
         self._renamer = renamer
@@ -155,9 +162,11 @@ class GroupedTab(QWidget):
         self._overview = False      # 总览模式
         self._merger = merger       # Overview 模式拖放合并 FinID
         self._tri = False           # 三栏模式
+        self._track_move_cb = None
         self._shot_type_setter = shot_type_setter
         self._shot_info_provider = shot_info_provider
         self._box_editor = box_editor
+        self._photo_type_setter = photo_type_setter
         self.vsplit = None
         self.similar_grid = None
         self.excluded_grid = None
@@ -229,10 +238,9 @@ class GroupedTab(QWidget):
             if self._renamer is not None:
                 self._rename_btn = QPushButton("Rename ID")
                 self._rename_btn.setToolTip(
-                    "把所有 FinID 重新编号为 FinID1..FinIDN (N=当前 FinID 总数)")
+                    "把所有 FinID 重新编号为 Fin001..FinNNN (N=当前 FinID 总数)")
                 self._rename_btn.clicked.connect(self._rename_fin_ids)
                 top.addWidget(self._rename_btn)
-            self._track_move_cb = None
             if track_move_checkbox and self._track_mover is not None:
                 self._track_move_cb = QCheckBox("Move whole track")
                 self._track_move_cb.setToolTip(
@@ -285,13 +293,16 @@ class GroupedTab(QWidget):
         if self._exclude is not None:
             # Delete 键: 把上方当前组选中的鳍图移入排除区
             self.grid.exclude_requested.connect(self._exclude_selected)
-        if self._best_marker is not None or self._exclude is not None:
-            # 大图查看窗口的右键/快捷键同样支持排除与标记最佳
+        if self._best_marker is not None or self._exclude is not None \
+                or self._alt_move:
+            # 大图查看窗口的右键/快捷键同样支持排除/标记最佳/Alt+N 移组
             self.grid.set_full_open_callbacks(
                 exclude=self._full_open_exclude_cb
                 if self._exclude is not None else None,
                 best=self._full_open_best_cb
-                if self._best_marker is not None else None)
+                if self._best_marker is not None else None,
+                move=self._full_open_move
+                if self._alt_move else None)
 
     def _move_to_group_index(self, idx):
         """Alt+N: 把网格中选中的图片移入侧边第 N 组 (与拖放同一条路径)。"""
@@ -304,14 +315,43 @@ class GroupedTab(QWidget):
         paths = [it.data(Qt.UserRole) for it in items]
         self._on_drop(paths, target)
 
+    def _full_open_move(self, path, idx):
+        """大图查看窗口中 Alt+N: 把当前图片移入侧边第 N 组。"""
+        if idx >= self.group_list.count():
+            return
+        target = self.group_list.item(idx).data(Qt.UserRole)
+        self._on_drop([path], target)
+
     def _on_middle(self, path):
         """中键鳍图: 弹窗查看对应原始全图, 可翻页浏览当前组内其它原图。"""
         if self._full_resolver is None:
             return
         orig = self._full_resolver(path)
         if orig is None:
-            QMessageBox.information(self, "Doris", "找不到对应的原图: %s" % path)
-            return
+            # 兜底: 用文件名在 fin_df 中再查一次 (框编辑后 Path/fullpath 可能不一致)
+            if hasattr(self._full_resolver, "__self__"):
+                ds = self._full_resolver.__self__
+                basename = os.path.basename(path)
+                if not ds.fin_df.empty and "PhotoName" in ds.fin_df.columns:
+                    for col in ("fullpath", "Path"):
+                        if col not in ds.fin_df.columns:
+                            continue
+                        rows = ds.fin_df[
+                            ds.fin_df[col].astype(str).str.endswith(basename)]
+                        if not rows.empty:
+                            photo = str(rows["PhotoName"].iloc[0])
+                            orig = os.path.join(ds.root, photo)
+                            if os.path.isfile(orig):
+                                break
+                            else:
+                                orig = None
+            if orig is None:
+                QMessageBox.information(
+                    self, "Doris",
+                    "找不到对应的原图。可能原因:\n"
+                    "1. FIN_METAINFO 中没有该鳍图记录;\n"
+                    "2. 原始照片文件已被移动或删除。\n\n路径: %s" % path)
+                return
         cur = self.group_list.currentItem()
         group_paths = self._groups.get(
             cur.data(Qt.UserRole), [path]) if cur else [path]
@@ -334,9 +374,17 @@ class GroupedTab(QWidget):
                 self.grid.refresh_path(fin_crop_path)
             return updated
 
+        def _misc_for_middle(orig_paths):
+            if self._photo_type_setter is None:
+                return
+            self._photo_type_setter(orig_paths, "MISC")
+
         dlg = ImageViewerDialog(origs, origs.index(orig), self,
                                 boxes=self._full_boxes,
-                                box_editor=_edit_for_middle)
+                                box_editor=_edit_for_middle,
+                                on_misc=_misc_for_middle
+                                if self._photo_type_setter is not None
+                                else None)
         dlg.exec_()
 
     def set_groups(self, groups, tooltips=None, keep_current=False, boxes=None):
@@ -358,16 +406,16 @@ class GroupedTab(QWidget):
             # 给足行高; 宽度不强行撑大, 让侧边栏保持紧凑
             item.setSizeHint(QSize(160, 28))
         if getattr(self, "count_label", None) is not None:
-            n = sum(1 for name in groups if name != "FinID0")
+            n = sum(1 for name in groups if name != "0")
             self.count_label.setText("FinID 总数: %d" % n)
         if not groups:
             return
-        # FinID0 不是真实个体, 默认选中其后第一个组 (如 FinID1)
+        # "0" 是未分类占位, 不是真实个体, 默认选中其后第一个组 (如 Fin001)
         if cur_name in groups:
             self.group_list.setCurrentRow(list(groups).index(cur_name))
         else:
             names = list(groups)
-            row = 1 if len(names) > 1 and names[0] == "FinID0" else 0
+            row = 1 if len(names) > 1 and names[0] == "0" else 0
             self.group_list.setCurrentRow(row)
 
     @staticmethod
@@ -500,7 +548,7 @@ class GroupedTab(QWidget):
 
     def _on_top_drop(self, paths):
         """拖入上半部: 来自排除区 -> 同 track 的鳍改回当前 FinID (track mover);
-        来自左下相似区 -> 整个体并入当前组 (普通 mover)。"""
+        来自左下相似区 -> 整个体并入当前组 (优先 similar_mover, 未设置时用普通 mover)。"""
         cur = self.group_list.currentItem()
         if cur is None:
             return
@@ -509,19 +557,32 @@ class GroupedTab(QWidget):
         from_excl = [p for p in paths if p in excl]
         other = [p for p in paths if p not in excl]
         if from_excl:
-            self._on_drop(from_excl, gname, use_track=True)
+            self._on_drop(from_excl, gname,
+                          use_track=self._use_track_for_exclude())
             self._excluded = [(gp, p) for gp, p in self._excluded
                               if not (gp == gname and p in from_excl)]
             self._refresh_excluded()
         if other:
-            self._on_drop(other, gname, use_track=False)
+            # Match 模式下从相似区拖入: 使用 similar_mover 移动整个源 FinID
+            mover = self._similar_mover if self._similar_mover is not None \
+                else self._mover
+            self._on_drop(other, gname, use_track=False, mover=mover)
 
-    def _on_exclude_drop(self, paths):
+    def _use_track_for_exclude(self):
+        """排除操作是否扩展到同 track: Review Mode 看 'Move whole track'
+        复选框; Match Mode 复选框禁用, 默认扩展同 track。"""
+        if self._track_move_cb is not None:
+            return self._track_move_cb.isChecked()
+        return True
+
+    def _on_exclude_drop(self, paths, use_track=None):
         """拖入右下排除区:
         来自上方(当前组) -> 同 track 的鳍赋予新 FinID, 新旧 FinID 相似度置 0;
         来自左下(其它个体) -> 被拖鳍的 FinID 与当前 FinID 相似度置 0。"""
         if self._exclude is None:
             return
+        if use_track is None:
+            use_track = self._use_track_for_exclude()
         cur = self.group_list.currentItem()
         if cur is None:
             return
@@ -533,7 +594,7 @@ class GroupedTab(QWidget):
         moved = {}
         try:
             if from_cur:
-                moved = fn_cur(from_cur, gname) or {}
+                moved = fn_cur(from_cur, gname, use_track=use_track) or {}
             if from_sim:
                 fn_sim(from_sim, gname)
         except Exception as e:
@@ -602,7 +663,7 @@ class GroupedTab(QWidget):
         if not items:
             return
         paths = [it.data(Qt.UserRole) for it in items]
-        self._on_exclude_drop(paths)
+        self._on_exclude_drop(paths, use_track=self._use_track_for_exclude())
 
     def _on_similar_grid_menu(self, pos):
         """右键相似个体网格: 排除与当前 FinID 的相似关系。"""
@@ -620,13 +681,13 @@ class GroupedTab(QWidget):
         if not items:
             return
         paths = [it.data(Qt.UserRole) for it in items]
-        self._on_exclude_drop(paths)
+        self._on_exclude_drop(paths, use_track=self._use_track_for_exclude())
 
     def _full_open_exclude_cb(self, paths):
         """大图查看窗口的排除回调: 把当前查看的鳍图移入排除区。"""
         if not paths or self._exclude is None:
             return
-        self._on_exclude_drop(paths)
+        self._on_exclude_drop(paths, use_track=self._use_track_for_exclude())
 
     def _full_open_best_cb(self, paths):
         """大图查看窗口的标记最佳回调: 把当前查看的鳍图标为 BestInFin。"""
@@ -646,7 +707,7 @@ class GroupedTab(QWidget):
             return
         reply = QMessageBox.question(
             self, "Rename ID",
-            "确定把所有 FinID 重新编号为 FinID1..FinIDN 吗?")
+            "确定把所有 FinID 重新编号为 Fin001..FinNNN 吗?")
         if reply != QMessageBox.Yes:
             return
         try:
@@ -740,16 +801,18 @@ class GroupedTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "保存失败", str(e))
 
-    def _on_drop(self, paths, target_name, use_track=None):
+    def _on_drop(self, paths, target_name, use_track=None, mover=None):
         """use_track=None 时：优先看 "Move whole track" 复选框（Review 模式）;
-        否则跟随最佳复选框 (Match 模式三栏)。勾选后侧边拖放改同 track 的鳍。"""
-        if use_track is None:
-            if self._track_move_cb is not None:
-                use_track = self._track_move_cb.isChecked()
-            else:
-                use_track = self._best_only
-        mover = self._track_mover if (use_track and self._track_mover) \
-            else self._mover
+        否则跟随最佳复选框 (Match 模式三栏)。勾选后侧边拖放改同 track 的鳍。
+        mover 显式传入时优先使用 (例如 Match 模式相似区 -> 上方用 similar_mover)。"""
+        if mover is None:
+            if use_track is None:
+                if self._track_move_cb is not None:
+                    use_track = self._track_move_cb.isChecked()
+                else:
+                    use_track = self._best_only
+            mover = self._track_mover if (use_track and self._track_mover) \
+                else self._mover
         if mover is None or target_name not in self._groups:
             return
         try:
@@ -796,7 +859,9 @@ class StatisticsTab(QWidget):
         self.fig_pie = Figure()
         self.fig_dolphin = Figure()
         self.fig_social = Figure()
+        self.fig_traffic = Figure()
         self._social_data = (None, None, None)
+        self._traffic_data = ([], [], [])
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -823,6 +888,7 @@ class StatisticsTab(QWidget):
         right.addWidget(FigureCanvasQTAgg(self.fig_pie))
         right.addWidget(FigureCanvasQTAgg(self.fig_dolphin))
         right.addWidget(FigureCanvasQTAgg(self.fig_clear))
+        right.addWidget(FigureCanvasQTAgg(self.fig_traffic))
         plots.addLayout(left, 2)
         plots.addLayout(right, 1)
         main_layout.addLayout(plots)
@@ -842,7 +908,7 @@ class StatisticsTab(QWidget):
         path = os.path.join(out_dir, "Statistics.pdf")
         try:
             from matplotlib.figure import Figure
-            fig = Figure(figsize=(14, 20))
+            fig = Figure(figsize=(20, 14))
             self._render_overview(fig)
             fig.savefig(path, dpi=150, bbox_inches="tight")
             QMessageBox.information(
@@ -851,29 +917,34 @@ class StatisticsTab(QWidget):
             QMessageBox.warning(self, "保存失败", str(e))
 
     def _render_overview(self, fig):
-        """在传入的 Figure 上绘制整页统计图 (3 行 x 2 列布局,
-        右侧第三行为社会网络图)。"""
+        """在传入的 Figure 上绘制整页统计图 (4 行 x 2 列布局)。"""
         from matplotlib.gridspec import GridSpec
-        gs = GridSpec(3, 2, figure=fig, width_ratios=[2, 1])
+        gs = GridSpec(4, 2, figure=fig, width_ratios=[2, 1])
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[1, 0])
-        ax3 = fig.add_subplot(gs[2, 0])
+        ax3 = fig.add_subplot(gs[2:4, 0])
         ax4 = fig.add_subplot(gs[0, 1])
         ax5 = fig.add_subplot(gs[1, 1])
         ax6 = fig.add_subplot(gs[2, 1])
+        ax7 = fig.add_subplot(gs[3, 1])
 
-        self._draw_bar(ax1, self._fin_counts, "Fin images per FinID",
-                       fontsize=8)
+        self._draw_stacked_bar(
+            ax1, self._fin_counts, "Fin images per FinID", fontsize=10,
+            series_labels=("Clear", "Blurred"),
+            series_colors=("#4C72B0", "#DD8452"))
         self._draw_stacked_bar(ax2, self._shot_counts,
-                               "Shots per FinID", fontsize=8)
-        self._draw_hist(ax3, self._clear_values, "Clearness distribution",
-                        fontsize=8)
-        self._draw_pie(ax4, self._aspect_counts, "Fin aspect distribution",
-                       fontsize=10)
-        self._draw_stacked_bar(ax5, self._dolphin_shot_counts,
-                               "Shots per DolphinID", fontsize=8)
-        self._draw_social_network(ax6, self._social_data,
+                               "Shots per FinID", fontsize=8,
+                               ylabel="shots")
+        self._draw_social_network(ax3, self._social_data,
                                   title="Dolphin social network")
+        self._draw_pie(ax4, self._aspect_counts, "Fin aspect distribution",
+                        fontsize=10)
+        self._draw_stacked_bar(ax5, self._dolphin_shot_counts,
+                               "Shots per DolphinID", fontsize=8,
+                               ylabel="shots")
+        self._draw_hist(ax6, self._clear_values, "Clearness distribution",
+                        fontsize=8)
+        self._draw_traffic(ax7, self._traffic_data, fontsize=8)
         fig.tight_layout()
 
     def _draw_bar(self, ax, counts, title, fontsize=5):
@@ -894,7 +965,13 @@ class StatisticsTab(QWidget):
         fig.clear()
         ax = fig.add_subplot(111)
         if counts and len(counts[0]) == 3:
-            self._draw_stacked_bar(ax, counts, title)
+            if title == "Fin images per FinID":
+                self._draw_stacked_bar(
+                    ax, counts, title,
+                    series_labels=("Clear", "Blurred"),
+                    series_colors=("#4C72B0", "#DD8452"))
+            else:
+                self._draw_stacked_bar(ax, counts, title, ylabel="shots")
         else:
             self._draw_bar(ax, counts, title)
         fig.tight_layout()
@@ -918,30 +995,34 @@ class StatisticsTab(QWidget):
         fig.tight_layout()
         fig.canvas.draw_idle()
 
-    def _draw_stacked_bar(self, ax, counts, title, fontsize=5):
-        """counts: [(label, dl_count, dr_count), ...]; DL 在下, DR 在上堆叠。"""
+    def _draw_stacked_bar(self, ax, counts, title, fontsize=5,
+                          series_labels=("DL", "DR"),
+                          series_colors=("#4C72B0", "#DD8452"),
+                          ylabel="count"):
+        """counts: [(label, val1, val2), ...]; 系列1 在下, 系列2 在上堆叠。"""
         if counts:
             labels = [k for k, _, _ in counts]
-            dl_vals = [dl for _, dl, _ in counts]
-            dr_vals = [dr for _, _, dr in counts]
+            vals1 = [v1 for _, v1, _ in counts]
+            vals2 = [v2 for _, _, v2 in counts]
             x = np.arange(len(labels))
             width = 0.6
-            ax.bar(x, dl_vals, width, label="DL", color="#4C72B0")
-            ax.bar(x, dr_vals, width, bottom=dl_vals, label="DR",
-                   color="#DD8452")
+            ax.bar(x, vals1, width, label=series_labels[0],
+                   color=series_colors[0])
+            ax.bar(x, vals2, width, bottom=vals1, label=series_labels[1],
+                   color=series_colors[1])
             ax.set_xticks(x)
             ax.set_xticklabels(labels, rotation=90, fontsize=fontsize)
             ax.legend(loc="upper right", fontsize=max(6, fontsize - 1))
-            for i, (dl, dr) in enumerate(zip(dl_vals, dr_vals)):
-                if dl:
-                    ax.text(i, dl / 2, str(dl), ha="center", va="center",
+            for i, (v1, v2) in enumerate(zip(vals1, vals2)):
+                if v1:
+                    ax.text(i, v1 / 2, str(v1), ha="center", va="center",
                             fontsize=max(4, fontsize - 1), color="white")
-                if dr:
-                    ax.text(i, dl + dr / 2, str(dr), ha="center",
+                if v2:
+                    ax.text(i, v1 + v2 / 2, str(v2), ha="center",
                             va="center", fontsize=max(4, fontsize - 1),
                             color="white")
         ax.set_title(title)
-        ax.set_ylabel("shots")
+        ax.set_ylabel(ylabel)
         ax.margins(y=0.15)
 
     def _stacked_bar(self, fig, counts, title):
@@ -997,7 +1078,8 @@ class StatisticsTab(QWidget):
             edge_color="#377eb8", connectionstyle="arc3,rad=0.1",
             arrows=True, arrowstyle="-")
         nx.draw_networkx_nodes(
-            G, pos, ax=ax, node_size=node_sizes,
+            G, pos, ax=ax, node_size=1,
+            #G, pos, ax=ax, node_size=node_sizes,
             node_color="skyblue", edgecolors="white")
         nx.draw_networkx_labels(
             G, pos, ax=ax, labels={n: n for n in nodes}, font_size=8,
@@ -1019,6 +1101,44 @@ class StatisticsTab(QWidget):
         fig.tight_layout()
         fig.canvas.draw_idle()
 
+    def _draw_traffic(self, ax, traffic_data, fontsize=7):
+        """Traffic 图: x=shot 时间, 左 y=unique DolphinID 数, 右 y=Distance。
+        """
+        from matplotlib.dates import DateFormatter
+        datetimes, dph_counts, distances = traffic_data
+        if not datetimes:
+            ax.set_title("Traffic (no data)")
+            ax.axis("off")
+            return
+        ax2 = ax.twinx()
+        ax.plot(datetimes, dph_counts, color="#4C72B0", marker="o",
+                linestyle="None", markerfacecolor="#4C72B0",
+                markeredgecolor="none", alpha=0.5, label="Unique DolphinID")
+        ax.set_ylabel("Dolphin Count", color="#4C72B0")
+        ax.tick_params(axis="y", labelcolor="#4C72B0")
+        # 过滤掉 None/NaN 的距离点
+        dist_x = [d for d, dist in zip(datetimes, distances) if dist is not None]
+        dist_y = [dist for dist in distances if dist is not None]
+        if dist_y:
+            ax2.plot(dist_x, dist_y, color="#DD8452", marker="o",
+                     linestyle="None", markerfacecolor="#DD8452",
+                     markeredgecolor="none", alpha=0.5, label="Distance")
+            ax2.set_ylabel("Distance (m)", color="#DD8452")
+            ax2.tick_params(axis="y", labelcolor="#DD8452")
+        ax.set_title("Traffic")
+        ax.set_xlabel("Shot Time")
+        ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+        for label in ax.get_xticklabels():
+            label.set_rotation(30)
+            label.set_horizontalalignment("right")
+
+    def _traffic(self, fig, traffic_data):
+        fig.clear()
+        ax = fig.add_subplot(111)
+        self._draw_traffic(ax, traffic_data)
+        fig.tight_layout()
+        fig.canvas.draw_idle()
+
     def _draw_pie(self, ax, aspect_counts, title, fontsize=9):
         if aspect_counts:
             labels = [k for k, _ in aspect_counts]
@@ -1035,13 +1155,14 @@ class StatisticsTab(QWidget):
         fig.canvas.draw_idle()
 
     def show_stats(self, fin_counts, shot_counts, aspect_counts, clear_values,
-                   dolphin_shot_counts, social_network_data):
+                   dolphin_shot_counts, social_network_data, traffic_data=([], [], [])):
         self._fin_counts = fin_counts
         self._shot_counts = shot_counts
         self._aspect_counts = aspect_counts
         self._clear_values = clear_values
         self._dolphin_shot_counts = dolphin_shot_counts
         self._social_data = social_network_data
+        self._traffic_data = traffic_data
 
         self._bar(self.fig_hist, fin_counts, "Fin images per FinID")
         self._bar(self.fig_shot, shot_counts, "Shots per FinID")
@@ -1051,6 +1172,68 @@ class StatisticsTab(QWidget):
         self._pie(self.fig_pie, aspect_counts, "Fin aspect distribution")
         self._social_network(self.fig_social, social_network_data,
                              "Dolphin social network")
+        self._traffic(self.fig_traffic, traffic_data)
+
+
+class StepRunner(QThread):
+    """在 PyInstaller 打包环境中以同进程方式运行流水线脚本。
+
+    冻结后没有独立的 Python 解释器，无法通过 QProcess 执行 ``python script.py``。
+    该线程用 ``runpy.run_path`` 执行脚本，并通过信号把 stdout/stderr 传回主线程。
+    """
+
+    log_text = pyqtSignal(str, object)
+    finished_with_code = pyqtSignal(int)
+    _lock = None
+
+    def __init__(self, path, args, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.args = args
+        if StepRunner._lock is None:
+            StepRunner._lock = threading.Lock()
+
+    def run(self):
+        class EmitStream(io.StringIO):
+            def __init__(self, signal, color=None):
+                super().__init__()
+                self.signal = signal
+                self.color = color
+                self._buffer = ""
+
+            def write(self, s):
+                if not s:
+                    return
+                self._buffer += s
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    self.signal.emit(line, self.color)
+
+            def flush(self):
+                if self._buffer:
+                    self.signal.emit(self._buffer, self.color)
+                    self._buffer = ""
+
+        with StepRunner._lock:
+            old_argv = sys.argv
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            exit_code = 0
+            try:
+                sys.argv = [self.path] + self.args
+                sys.stdout = EmitStream(self.log_text)
+                sys.stderr = EmitStream(self.log_text, "#ff6b6b")
+                runpy.run_path(self.path, run_name="__main__")
+            except SystemExit as e:
+                exit_code = e.code if isinstance(e.code, int) else 0
+            except Exception as e:
+                self.log_text.emit(str(e), "#ff6b6b")
+                exit_code = 1
+            finally:
+                sys.argv = old_argv
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+        self.finished_with_code.emit(exit_code)
 
 
 # ---------------------------------------------------------------------------
@@ -1060,12 +1243,14 @@ class DashboardTab(QWidget):
     """Dashboard 页: 处理流程入口 (布局参考 dashboard.ui)。
 
     按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
-    其余按钮以子进程运行对应流水线脚本 (扫描 / 切鳍 / 提特征 / 聚类 /
-    导出数据库 / 导出 Dolphin Overview PPT), 运行期间按钮禁用, 结束后恢复并提示。"""
+    其余按钮运行对应流水线脚本 (扫描 / 切鳍 / 提特征 / 聚类 /
+    导出数据库 / 导出 Dolphin Overview PPT): 开发模式下用子进程,
+    PyInstaller 打包后用同进程线程, 运行期间按钮禁用, 结束后恢复并提示。"""
 
     root_changed = pyqtSignal(str)
     scan_finished = pyqtSignal()
     locate_finished = pyqtSignal()
+    filter_finished = pyqtSignal()
     cluster_finished = pyqtSignal()
 
     STEPS = [
@@ -1224,7 +1409,11 @@ class DashboardTab(QWidget):
                 self._log.appendPlainText("[%s] %s" % (stamp, line))
 
     def _start_step(self, script, btn, args):
-        """启动 QProcess 运行脚本, args 为传给脚本的参数列表。"""
+        """启动脚本, args 为传给脚本的参数列表。
+
+        开发模式下用 QProcess 调用当前 Python 解释器执行脚本;
+        PyInstaller 打包后没有独立解释器, 改用同进程线程执行。
+        """
         if not self._root:
             QMessageBox.warning(self, "Doris",
                                 "请先通过 \"1. Set Root Folder\" 设置根目录")
@@ -1233,11 +1422,23 @@ class DashboardTab(QWidget):
         if not os.path.isfile(path):
             QMessageBox.warning(self, "Doris", "找不到脚本: %s" % path)
             return
-        self._append_log(
-            "启动 %s: %s %s" % (btn.text(), sys.executable,
-                               " ".join([path] + args)))
+        if getattr(sys, "frozen", False):
+            self._append_log(
+                "启动 %s (in-process): %s" % (btn.text(),
+                                             " ".join([path] + args)))
+        else:
+            self._append_log(
+                "启动 %s: %s %s" % (btn.text(), sys.executable,
+                                   " ".join([path] + args)))
         btn.setEnabled(False)
         self._set_status_running(btn.text())
+        if getattr(sys, "frozen", False):
+            runner = StepRunner(path, args, self)
+            runner.log_text.connect(self._append_log)
+            runner.finished_with_code.connect(
+                lambda code, b=btn: self._step_finished(b, code))
+            runner.start()
+            return
         proc = QProcess(self)
         proc.readyReadStandardOutput.connect(
             lambda: self._append_log(
@@ -1273,6 +1474,8 @@ class DashboardTab(QWidget):
             self.locate_finished.emit()
         if "Extract Fin Features" in btn.text():
             self._update_feature_status()
+        if "Select good quality fin" in btn.text() and exit_code == 0:
+            self.filter_finished.emit()
         if "Clustering" in btn.text() and exit_code == 0:
             self.cluster_finished.emit()
         self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),

@@ -69,7 +69,6 @@ class FinFeatureExtractorGeneral:
         self.csv_name = csv_name
         self.checkpoint = checkpoint
         self.pretrained_weights = pretrained_weights
-        self.save_portable = save_portable
         self.output_name = 'METAINFO/FIN_DEEPFEATURES'
 
         use_hf = self.model_name.startswith('hf-hub:')

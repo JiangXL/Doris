@@ -382,7 +382,7 @@ class CandidateList(QListWidget):
 
     def show_candidates(self, fids, paths, labels):
         """(fids, paths, labels): 后台分片加载候选鳍缩略图,
-        'FinID_x sim=0.83' 由加载器叠加在图上。"""
+        'Fin001 sim=0.83' 由加载器叠加在图上。"""
         self._stop_loaders()
         self.clear()
         self._items = {}
@@ -629,9 +629,9 @@ class MatchPanel(QWidget):
         self._name = name
         self.slot_dl.set_fin(dl_fid, dl_path)
         self.slot_dr.set_fin(dr_fid, dr_path)
-        self.cap_dl.setText("DL  FinID_%s" % dl_fid
+        self.cap_dl.setText("DL  %s" % dl_fid
                             if dl_fid is not None else "DL  (missing)")
-        self.cap_dr.setText("DR  FinID_%s" % dr_fid
+        self.cap_dr.setText("DR  %s" % dr_fid
                             if dr_fid is not None else "DR  (missing)")
         # 缺哪侧就为哪侧找候选: 用已有侧的鳍去相似检索异侧
         if dl_fid is None and dr_fid is not None:

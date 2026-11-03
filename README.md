@@ -16,6 +16,10 @@ identify, OrignalImageName, Path, X, Y, W, H, AssumedAspect, ConfirmedAspect, Cl
 
 依据相机画面晃动，计算浪涌？
 
+1. 合并
+2. 找不同
+3. 找相同
+
 ### Clustering
 only cofirm fin number larger than 5?
 
@@ -32,6 +36,8 @@ only cofirm fin number larger than 5?
 Group-DolphinID-FinID
 
 如何兼容当前格式？
+
+Dph distance distrubtion: the social distance?
 
 
 ## GUI Layout

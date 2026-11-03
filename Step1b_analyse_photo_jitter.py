@@ -2,7 +2,7 @@
 # coding: utf-8
 """计算连拍序列的帧间抖动（全局运动）
 
-对 IMAGE_METAINFO.csv 中同一 shot_id 的连拍图像，按时间顺序
+对 PHOTO_METAINFO.csv 中同一 ShotID 的连拍图像，按时间顺序
 逐对估计相邻帧的全局运动（平移为主），两种方法的结果追加到 CSV：
 
 1. 相位相关 (cv2.phaseCorrelate)：快速估计平移量

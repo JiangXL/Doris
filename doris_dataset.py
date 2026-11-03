@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 doris_dataset — Doris 的数据层 (pandas / numpy)
@@ -34,6 +33,9 @@ class Dataset:
             if "Clear" not in self.fin_df.columns:
                 # True=Clear, False=Blur, 空=Mid(未判定)
                 self.fin_df["Clear"] = pd.NA
+            if "FinID" in self.fin_df.columns:
+                self.fin_df["FinID"] = self.fin_df["FinID"].map(
+                    self._fid_key)
         self._cache = {}
 
     def _invalidate_cache(self, keys=None):
@@ -78,6 +80,20 @@ class Dataset:
         if not mask.any():
             return
         self.photo_df.loc[mask, "ShotType"] = str(shot_type)
+        self._save_csv(self.photo_df, "PHOTO_METAINFO.csv")
+
+    def set_photo_type(self, paths, photo_type):
+        """把指定原始照片路径的 PhotoType 列设置为 photo_type, 写回 PHOTO_METAINFO.csv。"""
+        if self.photo_df.empty or "PhotoName" not in self.photo_df.columns:
+            return
+        if "PhotoType" not in self.photo_df.columns:
+            self.photo_df["PhotoType"] = ""
+        names = {os.path.basename(p) for p in paths if p}
+        mask = self.photo_df["PhotoName"].isin(names)
+        if not mask.any():
+            return
+        self.photo_df.loc[mask, "PhotoType"] = str(photo_type)
+        self.photo_df.loc[mask, "ShotType"] = str(photo_type)
         self._save_csv(self.photo_df, "PHOTO_METAINFO.csv")
 
     def shot_info(self, shot_id):
@@ -129,7 +145,7 @@ class Dataset:
         def extra(fid, cle, conf, dph):
             parts = []
             if fid is not None and not pd.isna(fid):
-                parts.append("F%d" % int(float(fid)))
+                parts.append(str(fid))
             if dph is not None and not pd.isna(dph):
                 parts.append(str(dph))
             if has_dph:  # dolphin_id 模式只标 DolphinID, 不标 FinID
@@ -255,7 +271,7 @@ class Dataset:
         self._cache[key] = out
         return out
 
-    #  鳍侧分组
+    #  Fin Aspect 鳍侧分组
     def aspects(self):
         groups = {label: [] for label in ASPECT_LABELS.values()}  # 空组也列出, 作为拖放目标
         if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
@@ -263,17 +279,19 @@ class Dataset:
         df = self.fin_df.dropna(subset=["fullpath"])
         for cls, g in df.groupby("Aspect"):
             label = ASPECT_LABELS.get(cls, str(cls))
-            groups.setdefault(label, []).extend(g["fullpath"])
+            sorted_g = g.sort_values(by="ShotID")
+            groups.setdefault(label, []).extend(sorted_g["fullpath"])
         return groups
 
-    # 模糊分组: 依据 fin_df["clear"] 列 (True=Clear, False=Blurd)
+    # FID 模糊分组: 依据 fin_df["clear"] 列 (True=Clear, False=Blurd)
     def blur(self):
         groups = {"Blur": [], "Clear": []}
         if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
             return groups
         for val, g in self.fin_df.groupby("Clear", dropna=False):
             key = "Clear" if val else "Blur"
-            groups[key].extend(g["fullpath"])
+            sorted_g = g.sort_values(by="ShotID")
+            groups[key].extend(sorted_g["fullpath"])
         return groups
 
     #  FinID 分组
@@ -282,28 +300,30 @@ class Dataset:
         if self.fin_df.empty or "FinID" not in self.fin_df.columns:
             return groups
         for fid, g in self.fin_df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
-            groups["FinID%s" % fid] = list(g["fullpath"])
+            groups[fid] = list(g["fullpath"])
         return groups
 
     def rename_fin_ids(self):
-        """把所有 FinID 重新编号为 1..N (N=非空 FinID 数量), 保持原排序顺序;
-        写回 FIN_METAINFO.csv 并返回 old->new 映射。"""
+        """把所有 FinID 重新编号为 Fin001..FinNNN (N=非空 FinID 数量),
+        保持原排序顺序; 写回 FIN_METAINFO.csv 并返回 old->new 映射。"""
         df = self.fin_df
         if df.empty or "FinID" not in df.columns:
             return {}
-        old_ids = [v for v in df["FinID"].dropna().unique() if v != 0]
+        old_ids = [v for v in df["FinID"].dropna().unique() if v != "0"]
         if not old_ids:
             return {}
         # 统一按数值排序, 混合字符串/浮点时尽量按数值
         def num_key(x):
             try:
-                return float(x)
+                return float(x[3:]) if isinstance(x, str) and x.startswith("Fin") \
+                    else float(x)
             except (TypeError, ValueError):
                 return float("inf")
         old_ids_sorted = sorted(old_ids, key=num_key)
-        mapping = {old: (i + 1) for i, old in enumerate(old_ids_sorted)}
+        mapping = {old: "Fin%03d" % (i + 1)
+                   for i, old in enumerate(old_ids_sorted)}
         df["FinID"] = df["FinID"].map(
-            lambda x: mapping.get(x, x)).astype(df["FinID"].dtype)
+            lambda x: mapping.get(x, x))
         self._save_csv(df, "FIN_METAINFO.csv")
         return mapping
 
@@ -453,20 +473,17 @@ class Dataset:
     def similar_fins(self, group, threshold=0.4):
         """与当前 FinID 两两相似度 > threshold 的其它个体鳍图 (同 aspect)。
         只比较、只返回 BestInShot 标记的鳍图。
-        返回 (paths, labels): 按相似度降序, labels = 'FinIDx sim=0.83'。"""
+        返回 (paths, labels): 按相似度降序, labels = 'Fin001 sim=0.83'。"""
         key = ("similar_fins", group, threshold)
         if key in self._cache:
             return self._cache[key]
         df = self.fin_df
-        m = re.match(r"FinID(.+)$", group or "")
+        m = re.match(r"^(Fin\d+)$", group or "")
         sim = self._similarity_matrix()
         if not m or df.empty or "FinID" not in df.columns or sim is None:
             self._cache[key] = ([], {})
             return [], {}
-        try:
-            fid = int(float(m.group(1)))
-        except ValueError:
-            fid = m.group(1)
+        fid = m.group(1)
         if "BestInShot" in df.columns:
             marked = df["BestInShot"].astype(str).str.lower() \
                 .isin(("true", "1")).to_numpy()
@@ -492,20 +509,19 @@ class Dataset:
             if not marked[j]:  # 只显示 BestInShot 标记的鳍图
                 continue
             ofid = fids[j]
-            if ofid == fid or pd.isna(ofid) or ofid == 0:
+            if ofid == fid or pd.isna(ofid) or ofid == "0":
                 continue
             p = df["fullpath"].iloc[j]
             if not isinstance(p, str):
                 continue
             paths.append(p)
-            labels[p] = "FinID%s sim=%.2f" % (
-                int(ofid) if float(ofid).is_integer() else ofid, best[j])
+            labels[p] = "%s sim=%.2f" % (ofid, best[j])
         self._cache[key] = (paths, labels)
         return paths, labels
 
     #  FinID 总览: 每个个体一张代表鳍图 (最清晰的)
     def fin_id_previews(self):
-        """返回 (paths, labels): 每个 FinID 一张代表图 + 'FinIDx (n)' 角标。
+        """返回 (paths, labels): 每个 FinID 一张代表图 + 'Fin001 (n)' 角标。
         代表图优先取 BestInShot 标记中 Clearness 最高的一张 (与 Dolphin 页同规则)。"""
         df = self.fin_df
         if df.empty or "FinID" not in df.columns \
@@ -513,7 +529,7 @@ class Dataset:
             return [], {}
         paths, labels = [], {}
         for fid, g in df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
-            if fid == 0:
+            if fid == "0":
                 continue  # 0 = 未分类
             n = len(g)  # 角标数量按全部鳍图计, 不受 BestInShot 筛选影响
             if "BestInShot" in g.columns:  # 优先在 BestInShot 标记里选
@@ -526,35 +542,49 @@ class Dataset:
                 rep = g.iloc[0]
             p = rep["fullpath"]
             paths.append(p)
-            labels[p] = "FinID%s (%d)" % (fid, n)
+            labels[p] = "%s (%d)" % (fid, n)
         return paths, labels
 
     #  统计: FinID 鳍图数分布 / 部位占比
     def fin_id_counts(self):
-        """[(label, count)]: 每个 FinID 的鳍图数, 按数量降序 (同数按编号升序);
-        不含 FinID0 (未分类, 非真实个体)。"""
+        """[(label, clear_count, blur_count)]: 每个 FinID 的鳍图数,
+        按总数降序 (同数按编号升序); 不含未分类 FinID。
+        Clear=True 在下, Clear=False 在上。"""
         if self.fin_df.empty or "FinID" not in self.fin_df.columns:
             return []
-        counts = self.fin_df.dropna(subset=["FinID"]).groupby("FinID").size()
-        counts = counts[[fid for fid in counts.index if fid != 0]]
+        df = self.fin_df.dropna(subset=["FinID"]).copy()
+        df = df[df["FinID"] != "0"]
+        if "Clear" not in df.columns:
+            df["Clear"] = False
+        clear_mask = df["Clear"].astype(str).str.lower().isin(("true", "1"))
+        df["_is_clear"] = clear_mask
+        counts = df.groupby("FinID").agg(
+            clear=("_is_clear", "sum"),
+            total=("FinID", "size")
+        ).astype(int)
+        counts["blur"] = counts["total"] - counts["clear"]
+
         def num(fid):
             try:
-                return float(fid)
+                return int(fid[3:]) if isinstance(fid, str) and fid.startswith("Fin") \
+                    else float(fid)
             except (TypeError, ValueError):
                 return float("inf")
-        return [("FinID%s" % fid, int(counts[fid]))
-                for fid in sorted(counts.index,
-                                  key=lambda f: (-counts[f], num(f)))]
+        return [(fid, int(row["clear"]), int(row["blur"]))
+                for fid, row in sorted(
+                    counts.iterrows(),
+                    key=lambda item: (-(item[1]["clear"] + item[1]["blur"]),
+                                      num(item[0])))]
 
     def fin_id_shot_counts(self):
         """[(label, dl_shots, dr_shots)]: 每个 FinID 在 DL/DR 上出现的
-        不同 shot 数, 按总数降序; 不含 FinID0。"""
+        不同 shot 数, 按总数降序; 不含未分类 FinID。"""
         if self.fin_df.empty or "FinID" not in self.fin_df.columns \
                 or "ShotID" not in self.fin_df.columns \
                 or "Aspect" not in self.fin_df.columns:
             return []
         df = self.fin_df.dropna(subset=["FinID", "ShotID", "Aspect"])
-        df = df[df["FinID"] != 0]
+        df = df[df["FinID"] != "0"]
         counts = df.groupby(["FinID", "Aspect"])["ShotID"].nunique().unstack(
             fill_value=0)
         counts = counts.reindex(columns=["DL", "DR"], fill_value=0)
@@ -563,10 +593,11 @@ class Dataset:
             columns="total")
         def num(fid):
             try:
-                return float(fid)
+                return int(fid[3:]) if isinstance(fid, str) and fid.startswith("Fin") \
+                    else float(fid)
             except (TypeError, ValueError):
                 return float("inf")
-        return [("FinID%s" % fid, int(row["DL"]), int(row["DR"]))
+        return [(fid, int(row["DL"]), int(row["DR"]))
                 for fid, row in sorted(counts.iterrows(),
                                        key=lambda item: (-item[1].sum(),
                                                          num(item[0])))]
@@ -637,6 +668,54 @@ class Dataset:
                        key=lambda d: (-node_counts[d], d))
         return nodes, edges, node_counts
 
+    def traffic_data(self):
+        """返回 Traffic 图数据: (datetimes, dph_counts, distances)。
+
+        按 ShotID 聚合:
+        - datetimes: 该 shot 第一张照片的 Datetimesec 解析为 datetime。
+        - dph_counts: 该 shot 在 FIN_METAINFO 中出现的不重复 DolphinID 数。
+        - distances:  该 shot 第一张照片的估算距离
+                      (2^((FocusPosition2/16-5)+1) * FocusLength35mm/1000)。
+        三个列表均已按 datetimes 升序排列。
+        """
+        if self.photo_df.empty or "ShotID" not in self.photo_df.columns \
+                or "Datetimesec" not in self.photo_df.columns:
+            return [], [], []
+        photo = self.photo_df.copy()
+        photo["ShotID"] = photo["ShotID"].astype(str)
+        # 每 shot 取第一张照片的 Datetimesec / 焦距信息
+        first = photo.groupby("ShotID", sort=False).first().reset_index()
+        first["datetime"] = pd.to_datetime(
+            first["Datetimesec"], format="%Y:%m:%d %H:%M:%S.%f", errors="coerce")
+        # 计算距离
+        def _dist(row):
+            if "FocusPosition2" not in row or "FocusLength35mm" not in row:
+                return None
+            fp2, fl = row["FocusPosition2"], row["FocusLength35mm"]
+            if pd.isna(fp2) or pd.isna(fl):
+                return None
+            try:
+                return (2 ** ((float(fp2) / 16 - 5) + 1)) * (float(fl) / 1000)
+            except Exception:
+                return None
+        first["distance"] = first.apply(_dist, axis=1)
+
+        # 每 shot 的 DolphinID 数
+        dph_counts = {}
+        if not self.fin_df.empty and "ShotID" in self.fin_df.columns \
+                and "DolphinID" in self.fin_df.columns:
+            df = self.fin_df.dropna(subset=["ShotID", "DolphinID"])
+            df["ShotID"] = df["ShotID"].astype(str)
+            dph_counts = df.groupby("ShotID")["DolphinID"].nunique().to_dict()
+
+        first["dph_count"] = first["ShotID"].map(dph_counts).fillna(0).astype(int)
+        first = first.dropna(subset=["datetime"]).sort_values("datetime")
+        return (
+            first["datetime"].tolist(),
+            first["dph_count"].tolist(),
+            first["distance"].tolist(),
+        )
+
     # 9. 海豚配对: DL/DR 鳍配对
     def _extra_dolphins(self):
         """DOLPHINS.csv 中用户手工创建的空海豚名列表。"""
@@ -683,7 +762,7 @@ class Dataset:
             df["DolphinID"] = pd.NA
             changed = True
         sub = df.dropna(subset=["FinID"])
-        sub = sub[sub["FinID"] != 0]  # 0 = 未分类
+        sub = sub[sub["FinID"] != "0"]  # 0 = 未分类
 
         def dph_of(fid, cls):
             v = sub[(sub["FinID"] == fid) & (sub["Aspect"] == cls)][
@@ -835,11 +914,8 @@ class Dataset:
             if isinstance(r.get("Aspect"), str):
                 parts.append(r["Aspect"])
             fid = r.get("FinID")
-            if fid is not None and not pd.isna(fid):
-                try:
-                    parts.append("F%d" % int(float(fid)))
-                except (TypeError, ValueError):
-                    parts.append(str(fid))
+            if fid is not None and not pd.isna(fid) and fid != "0":
+                parts.append(str(fid))
             if parts:
                 labels[p] = " ".join(parts)
         self._cache[key] = labels
@@ -872,9 +948,30 @@ class Dataset:
     # ------------------------------------------------------------------
     @staticmethod
     def _fid_key(fid):
-        """FinID 归一化键: 浮点读法 (12.0) 与整数/字符串读法视为同一个。"""
+        """FinID 归一化键: 统一为 FinNNN 字符串格式。
+        支持数值、数值字符串、FinNNN 字符串、纯数字字符串。
+        0 / '0' / 'Fin000' / NaN 保持为未分类 '0'。
+        """
+        if fid is None:
+            return "0"
+        if isinstance(fid, str):
+            s = fid.strip()
+            if s.lower() in ("nan", "", "none"):
+                return "0"
+            if s.startswith("Fin"):
+                try:
+                    n = int(s[3:])
+                    return "Fin%03d" % n
+                except ValueError:
+                    return s
+            try:
+                n = int(float(s))
+                return "Fin%03d" % n if n != 0 else "0"
+            except ValueError:
+                return s
         try:
-            return str(int(float(fid)))
+            n = int(float(fid))
+            return "Fin%03d" % n if n != 0 else "0"
         except (TypeError, ValueError):
             return str(fid)
 
@@ -973,7 +1070,7 @@ class Dataset:
         for j in np.argsort(-best):
             if best[j] <= threshold:
                 break
-            if clss[j] != other or pd.isna(fids[j]) or fids[j] == 0:
+            if clss[j] != other or pd.isna(fids[j]) or keys[j] == "0":
                 continue
             k = keys[j]
             if k not in scores:
@@ -986,7 +1083,18 @@ class Dataset:
                 .dropna(subset=["fullpath"])
             if g.empty:
                 continue
-            if "BestInShot" in g.columns:  # 优先在 BestInShot 标记里选
+            # 候选代表图优先级: BestInFin > BestInShot 中最清晰 > 任意最清晰
+            if "BestInFin" in g.columns:
+                m = g["BestInFin"].astype(str).str.lower() \
+                    .isin(("true", "1"))
+                if m.any():
+                    g = g[m]
+                elif "BestInShot" in g.columns:
+                    m = g["BestInShot"].astype(str).str.lower() \
+                        .isin(("true", "1"))
+                    if m.any():
+                        g = g[m]
+            elif "BestInShot" in g.columns:
                 m = g["BestInShot"].astype(str).str.lower() \
                     .isin(("true", "1"))
                 if m.any():
@@ -997,7 +1105,7 @@ class Dataset:
                 p = g["fullpath"].iloc[0]
             out_fids.append(k)
             paths.append(p)
-            labels[p] = "FinID%s sim=%.2f" % (k, s)
+            labels[p] = "%s sim=%.2f" % (k, s)
         return out_fids, paths, labels
 
     # ------------------------------------------------------------------
@@ -1039,6 +1147,7 @@ class Dataset:
         """按新框坐标重新生成并覆盖 FIN/ 下的裁剪鳍图。
 
         返回保存的裁剪图绝对路径; 若 FIN_METAINFO 中无对应行则返回 None。
+        优先保留现有 Path/fullpath, 避免框编辑后 grid 中存储的 fin 路径失效。
         """
         if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
             return None
@@ -1077,8 +1186,13 @@ class Dataset:
         crop = img.crop((x0, y0, x1, y1))
 
         rel_path = row.get("Path") if "Path" in row.index else None
+        full_path = row.get("fullpath") if "fullpath" in row.index else None
         if isinstance(rel_path, str) and rel_path:
             out_rel = rel_path
+        elif isinstance(full_path, str) and full_path:
+            # Path 缺失但 fullpath 还在: 从 fullpath 推相对路径, 保证 grid 路径不变
+            out_rel = os.path.relpath(full_path, self.root)
+            self.fin_df.loc[idx, "Path"] = out_rel
         else:
             ext = os.path.splitext(name)[1].lower()
             if ext not in (".jpg", ".jpeg", ".png"):
@@ -1185,14 +1299,10 @@ class Dataset:
     def move_to_fin_id(self, paths, group):
         """改个体分组: 更新 fin_df 的 FinID 列, 同时统一该 FinID 的 DolphinID。
         被拖鳍所属 FinID 的全部鳍一起移动 (即整个个体并入目标组)。"""
-        m = re.match(r"FinID(.+)$", group)
+        m = re.match(r"^(Fin\d+)$", group)
         if not m:
             return {}
         fid = m.group(1)
-        try:  # FinID 为数值列时保持数值类型
-            fid = int(float(fid))
-        except ValueError:
-            pass
         if "FinID" not in self.fin_df.columns:
             self.fin_df["FinID"] = pd.NA
         if "DolphinID" not in self.fin_df.columns:
@@ -1200,9 +1310,9 @@ class Dataset:
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        # 扩展到与被拖鳍同 FinID 的所有鳍 (忽略未分类的 0/空)
+        # 扩展到与被拖鳍同 FinID 的所有鳍 (忽略未分类)
         src_ids = [v for v in self.fin_df.loc[mask, "FinID"].dropna().unique()
-                   if v != 0]
+                   if v != "0"]
         if src_ids:
             mask = mask | self.fin_df["FinID"].isin(src_ids)
         self.fin_df.loc[mask, "FinID"] = fid
@@ -1238,12 +1348,12 @@ class Dataset:
             return keys[hit[0]] if len(hit) else None
 
         dst = fid_of(target_path)
-        if dst is None or dst in ("0", "nan", "None"):
+        if dst is None or dst == "0":
             return []
         merged = []
         for p in src_paths:
             src = fid_of(p)
-            if src and src != dst and src not in ("0", "nan", "None"):
+            if src and src != dst and src != "0":
                 self.merge_fin_ids(src, dst)
                 merged.append(src)
         return merged
@@ -1293,17 +1403,12 @@ class Dataset:
 
     def move_track_to_fin_id(self, paths, group):
         """改个体分组 (勾选最佳鳍图时的侧边拖放): 只更新同 track
-        (ShotID + TrackIDInShot) 的鳍的 FinID, 不动整个个体。"""
-        m = re.match(r"FinID(.+)$", group)
-        if not m:
+        (ShotID + TrackIDInShot) 的鳍的 FinID, 不动整个个体。
+        group 为 FinNNN 字符串 (如 Fin001); 未分类 sentinel 为 "0"。
+        """
+        fid = self._fid_key(group)
+        if fid == "0" or "FinID" not in self.fin_df.columns:
             return {}
-        fid = m.group(1)
-        try:  # FinID 为数值列时保持数值类型
-            fid = int(float(fid))
-        except ValueError:
-            pass
-        if "FinID" not in self.fin_df.columns:
-            self.fin_df["FinID"] = pd.NA
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
@@ -1323,17 +1428,12 @@ class Dataset:
 
     def move_selected_to_fin_id(self, paths, group):
         """只把被选中的鳍图移到目标 FinID, 不扩展同 track;
-        DolphinID 按目标 FinID 同步/清除。"""
-        m = re.match(r"FinID(.+)$", group)
-        if not m:
+        DolphinID 按目标 FinID 同步/清除。
+        group 为 FinNNN 字符串 (如 Fin001); 未分类 sentinel 为 "0"。
+        """
+        fid = self._fid_key(group)
+        if fid == "0" or "FinID" not in self.fin_df.columns:
             return {}
-        fid = m.group(1)
-        try:
-            fid = int(float(fid))
-        except ValueError:
-            pass
-        if "FinID" not in self.fin_df.columns:
-            self.fin_df["FinID"] = pd.NA
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
@@ -1343,13 +1443,17 @@ class Dataset:
     # 三栏模式排除区: 相似度置 0 并持久化到 FIN_SIMILARITY.npy
     # ------------------------------------------------------------------
     def _zero_sim_between(self, ids_a, ids_b):
-        """把两组 FinID 之间的两两相似度置 0, 写回 FIN_SIMILARITY.npy。"""
+        """把两组 FinID 之间的两两相似度置 0, 写回 FIN_SIMILARITY.npy。
+        ids_a/ids_b 为 FinNNN 字符串集合 (或列表); 未分类 "0" 会被忽略。
+        """
         sim = self._similarity_matrix()
         if sim is None or "FinID" not in self.fin_df.columns:
             return
-        fids = self.fin_df["FinID"].to_numpy()
-        ia = np.where(np.isin(fids, [float(i) for i in ids_a]))[0]
-        ib = np.where(np.isin(fids, [float(i) for i in ids_b]))[0]
+        keys = self.fin_df["FinID"].map(self._fid_key).to_numpy()
+        target_a = {self._fid_key(i) for i in ids_a} - {"0"}
+        target_b = {self._fid_key(i) for i in ids_b} - {"0"}
+        ia = np.where(np.isin(keys, list(target_a)))[0]
+        ib = np.where(np.isin(keys, list(target_b)))[0]
         if not len(ia) or not len(ib):
             return
         sim[np.ix_(ia, ib)] = 0
@@ -1364,22 +1468,22 @@ class Dataset:
             np.save(sim_file, sim)
         self._invalidate_cache()
 
-    def exclude_to_new_fin_id(self, paths, cur_group):
+    def exclude_to_new_fin_id(self, paths, cur_group, use_track=True):
         """当前组的鳍拖入排除区: 同 track 的鳍赋予新 FinID (现有最大 +1),
-        新旧 FinID 间相似度置 0, 写回 CSV 和 npy。返回 {path: path}。"""
-        m = re.match(r"FinID(.+)$", cur_group or "")
-        if not m:
-            return {}
-        try:
-            cur_fid = int(float(m.group(1)))
-        except ValueError:
+        新旧 FinID 间相似度置 0, 写回 CSV 和 npy。返回 {path: path}。
+        use_track=False 时只排除被选中的鳍图 (不扩展到同 track)。
+        FinID 统一使用 FinNNN 字符串格式; 未分类 sentinel 为 "0"。
+        """
+        cur_fid = self._fid_key(cur_group or "")
+        if cur_fid == "0":
             return {}
         df = self.fin_df
         mask = df["fullpath"].isin(paths)
         if not mask.any():
             return {}
         # 同 track 扩展 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)
-        if "TrackIDInShot" in df.columns and "ShotID" in df.columns:
+        if use_track and "TrackIDInShot" in df.columns \
+                and "ShotID" in df.columns:
             key_rows = df.loc[mask, ["ShotID", "TrackIDInShot"]].dropna()
             pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
             if pairs:
@@ -1387,8 +1491,11 @@ class Dataset:
                     list(zip(df["ShotID"], df["TrackIDInShot"])),
                     index=df.index)
                 mask = mask | row_keys.isin(pairs)
-        nums = pd.to_numeric(df["FinID"], errors="coerce")
-        new_fid = int(nums.max()) + 1 if nums.notna().any() else 1
+        keys = df["FinID"].map(self._fid_key)
+        nums = [int(m.group(1)) for k in keys if k != "0"
+                for m in [re.match(r"^Fin(\d+)$", k)] if m]
+        nxt = max(nums) + 1 if nums else 1
+        new_fid = "Fin%03d" % nxt
         df.loc[mask, "FinID"] = new_fid
         self._save_csv(df, "FIN_METAINFO.csv")
         self._zero_sim_between({new_fid}, {cur_fid})
@@ -1397,16 +1504,15 @@ class Dataset:
 
     def exclude_fin_id_pair(self, paths, cur_group):
         """左下相似鳍拖入排除区: 被拖鳍的 FinID 与当前 FinID 的
-        两两相似度置 0 (不改 FinID), 写回 npy。"""
-        m = re.match(r"FinID(.+)$", cur_group or "")
-        if not m:
-            return
-        try:
-            cur_fid = int(float(m.group(1)))
-        except ValueError:
+        两两相似度置 0 (不改 FinID), 写回 npy。
+        FinID 统一使用 FinNNN 字符串格式; 未分类 sentinel 为 "0"。
+        """
+        cur_fid = self._fid_key(cur_group or "")
+        if cur_fid == "0":
             return
         mask = self.fin_df["fullpath"].isin(paths)
-        src = [v for v in self.fin_df.loc[mask, "FinID"].dropna().unique()
-               if v != 0]
+        src = [self._fid_key(v) for v in
+               self.fin_df.loc[mask, "FinID"].dropna().unique()
+               if self._fid_key(v) != "0"]
         if src:
             self._zero_sim_between(src, {cur_fid})

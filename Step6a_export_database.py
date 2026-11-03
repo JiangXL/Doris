@@ -176,6 +176,7 @@ class DatabaseExporter:
         if not valid_types:
             return
         photo = self.photo_df
+        #TODO: export MISC in "PhotoType"
         if photo is None or photo.empty or "ShotType" not in photo.columns:
             print("Miss valid ShotType meta info")
             return
