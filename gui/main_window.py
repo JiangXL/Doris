@@ -17,7 +17,7 @@ from .common import ImageGrid
 class MainWindow(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("Doris v0.2 — %s" % root)
+        self.setWindowTitle("Doris v0.2.2 — %s" % root)
         #self.resize(1280, 800)
 
         self.tabs = QTabWidget()
@@ -42,7 +42,9 @@ class MainWindow(QMainWindow):
             cur = self._dolphin_stack.currentWidget()
             if getattr(cur, "_needs_refresh", False):
                 if cur is self._dolphin_tab:
-                    self._dolphin_tab.show_dolphins(self.ds.dolphins())
+                    social_map = self.ds.dolphin_social_map()
+                    self._dolphin_tab.show_dolphins(self.ds.dolphins(),
+                                                    social=social_map)
                 elif cur is self._match_panel:
                     self._match_panel.show_dolphins(self.ds.dolphins())
                 elif cur is self._dolphin_review_tab:
@@ -201,7 +203,8 @@ class MainWindow(QMainWindow):
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
         self._dolphin_tab = DolphinTab()
-        self._dolphin_tab.show_dolphins(ds.dolphins())
+        self._dolphin_tab.show_dolphins(ds.dolphins(),
+                                        social=ds.dolphin_social_map())
         self._dolphin_tab.dr_swapped.connect(self._swap_dolphin_dr)
         self._match_panel = MatchPanel(ds.dolphin_candidates)
         self._match_panel.assign_requested.connect(self._match_assign)
@@ -287,7 +290,9 @@ class MainWindow(QMainWindow):
             self._match_panel.show_dolphins(self.ds.dolphins())
             self._dolphin_stack.setCurrentWidget(self._match_panel)
         else:  # overview
-            self._dolphin_tab.show_dolphins(self.ds.dolphins())
+            social_map = self.ds.dolphin_social_map()
+            self._dolphin_tab.show_dolphins(self.ds.dolphins(),
+                                            social=social_map)
             self._dolphin_stack.setCurrentWidget(self._dolphin_tab)
 
     def _refresh_dolphin_review(self):
@@ -319,7 +324,8 @@ class MainWindow(QMainWindow):
     def _new_dolphin(self):
         """新建空海豚并刷新 Dolphin 页。"""
         self.ds.new_dolphin()
-        self._dolphin_tab.show_dolphins(self.ds.dolphins())
+        social_map = self.ds.dolphin_social_map()
+        self._dolphin_tab.show_dolphins(self.ds.dolphins(), social=social_map)
         self._refresh_dolphin_review()
 
     def _rename_dolphin_ids(self):
@@ -334,7 +340,8 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "重命名失败", str(e))
             return
-        self._dolphin_tab.show_dolphins(self.ds.dolphins())
+        social_map = self.ds.dolphin_social_map()
+        self._dolphin_tab.show_dolphins(self.ds.dolphins(), social=social_map)
         self._refresh_dolphin_review()
         self._refresh_stats()
         # Social Structure / Dolphin Review 等脏页标记刷新
@@ -343,7 +350,8 @@ class MainWindow(QMainWindow):
     def _swap_dolphin_dr(self, src, dst):
         """Dolphin 页拖 DR 格到其它海豚: 交换/移动 DR 配对后刷新本页。"""
         self.ds.swap_dolphin_dr(src, dst)
-        self._dolphin_tab.show_dolphins(self.ds.dolphins())
+        social_map = self.ds.dolphin_social_map()
+        self._dolphin_tab.show_dolphins(self.ds.dolphins(), social=social_map)
         self._refresh_dolphin_review()
         self._refresh_stats()
 
@@ -426,6 +434,7 @@ class MainWindow(QMainWindow):
         切换标签页时再由 _on_tab_changed 重建。"""
         ds = self.ds
         dolphins = ds.dolphins()
+        social_map = ds.dolphin_social_map()
         for title, tab, fn in self._group_tabs:
             if tab.isVisible():
                 self._rebuild_group_tab(tab, title, fn)
@@ -437,7 +446,7 @@ class MainWindow(QMainWindow):
             if dpage.isVisible():
                 cur = self._dolphin_stack.currentWidget()
                 if cur is self._dolphin_tab:
-                    self._dolphin_tab.show_dolphins(dolphins)
+                    self._dolphin_tab.show_dolphins(dolphins, social=social_map)
                 elif cur is self._match_panel:
                     self._match_panel.show_dolphins(dolphins)
                 elif cur is self._dolphin_review_tab:

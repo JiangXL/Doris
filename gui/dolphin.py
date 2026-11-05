@@ -61,13 +61,15 @@ class DolphinTab(QListWidget):
         self._items = {}
         self._press_bottom = False  # 按下位置是否在 DR (下) 格
 
-    def show_dolphins(self, dolphins):
+    def show_dolphins(self, dolphins, social=None):
         """dolphins: [(name, dl_fid, dr_fid, dl_path, dr_path)];
+        social: {DolphinID: SocialStructure 标签}; 显示在每个海豚格左上角。
         后台分片加载合成缩略图。"""
         self._stop_loaders()
         self.clear()
         self._items = {}
         cell = FIN_CELL_H
+        social = social or {}
         for name, dl_fid, dr_fid, dl, dr in dolphins:
             item = QListWidgetItem()  # 名称由合成图画在上下鳍之间, 不再用顶部条
             item.setData(Qt.UserRole, (name, dl_fid, dr_fid, dl, dr))
@@ -83,8 +85,9 @@ class DolphinTab(QListWidget):
                                      ".doris_thumbs") if allp else None
         except ValueError:
             cache_dir = None
-        # (name, dl_fid, dr_fid, dl_path, dr_path)
-        jobs = [(d[0], d[1], d[2], d[3], d[4]) for d in dolphins]
+        # (name, dl_fid, dr_fid, dl_path, dr_path, social_label)
+        jobs = [(d[0], d[1], d[2], d[3], d[4], social.get(d[0], ""))
+                for d in dolphins]
         n = min(8, os.cpu_count() or 4, len(jobs))
         for k in range(n):
             loader = DolphinLoader(jobs[k::n], cache_dir=cache_dir)

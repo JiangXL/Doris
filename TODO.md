@@ -29,3 +29,10 @@
 [] assign new BestInShot for new FinID and orignal FinID when user only move selected fin images out of current FinID, 
 [] Plot: water fall traffic
 [] allow user to new/delete fin before extract feature
+[] new fin
+[] rename social strcture to Subgroup
+
+1. New dolphin 
+2. Low quality 60
+[x] marker the dolhpin with NN label, assign the same font color for the same group
+[] 根据 NN 排序 DphID

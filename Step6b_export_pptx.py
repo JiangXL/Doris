@@ -16,13 +16,33 @@ from PIL import Image
 from pptx import Presentation
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+import hashlib
 
 RATIO = 16 / 9  # 背鳍图统一裁成的宽高比
 GRID_COLS = 5   # 固定网格列数，行数随海豚数量自动增加
 
-def export_dolphin_pptx(dolphins, out_path, cols=GRID_COLS):
+_SOCIAL_COLORS = [
+    (255, 99, 71), (30, 144, 255), (255, 215, 0),
+    (50, 205, 50), (255, 105, 180), (0, 206, 209),
+    (255, 165, 0), (148, 0, 211), (0, 255, 127),
+    (255, 69, 0), (100, 149, 237), (220, 20, 60),
+    (0, 191, 255), (255, 20, 147), (124, 252, 0),
+    (255, 218, 185),
+]
+
+
+def _social_color(label):
+    """为每个 SocialStructure 标签生成稳定、可区分的 RGB 颜色。"""
+    if not label:
+        return (255, 255, 255)
+    idx = int(hashlib.md5(label.encode("utf-8")).hexdigest(), 16)
+    return _SOCIAL_COLORS[idx % len(_SOCIAL_COLORS)]
+
+def export_dolphin_pptx(dolphins, out_path, social=None, cols=GRID_COLS):
     """dolphins: [(name, dl_fid, dr_fid, dl_path, dr_path)] (Dataset.dolphins());
-    所有海豚排在同一页, 每格仅叠加标注 DolphinID, 返回写入的海豚数。
+    social: {DolphinID: SocialStructure 标签}; 显示在每个海豚格左上角。
+    所有海豚排在同一页, 每格叠加标注 DolphinID 与 SocialStructure, 返回写入的海豚数。
     cols: 固定列数, 行数随海豚数量自动计算。"""
     prs = Presentation()
     prs.slide_width = Inches(13.333)   # 16:9
@@ -39,9 +59,10 @@ def export_dolphin_pptx(dolphins, out_path, cols=GRID_COLS):
     #cw, ch = W / cols, H / rows
     cw = W / cols
     ch = cw/16*18
+    social = social or {}
     for k, (name, dl_fid, dr_fid, dl, dr) in enumerate(dolphins):
         r, c = divmod(k, cols)
-        x, y = c * cw, r * ch 
+        x, y = c * cw, r * ch
         # 上 DL 下 DR 无缝相接 (各占比一半), 编号叠加在接缝处, 不占空间
         half = ch / 2
         _add_pic(slide, dl, x, y, cw, half)
@@ -54,8 +75,38 @@ def export_dolphin_pptx(dolphins, out_path, cols=GRID_COLS):
         p.alignment = PP_ALIGN.CENTER
         p.runs[0].font.size = Pt(min(24, max(9, ch * 7)))
         p.runs[0].font.bold = True
+        # SocialStructure 标签: 左上角, 每个组用自己的颜色
+        label = social.get(str(name), "")
+        if label:
+            _add_social_label(slide, x, y, label, cw)
     prs.save(out_path)
     return n
+
+
+def _add_social_label(slide, x, y, label, cw):
+    """在格子左上角添加 SocialStructure 标签, 多组时各自着色。"""
+    parts = [s.strip() for s in label.split(",") if s.strip()]
+    if not parts:
+        return
+    tb = slide.shapes.add_textbox(Inches(x + 0.03), Inches(y + 0.03),
+                                  Inches(max(cw * 0.8, 1.0)), Inches(0.25))
+    tf = tb.text_frame
+    tf.word_wrap = False
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+    font_size = Pt(min(12, max(8, cw * 4)))
+    for i, part in enumerate(parts):
+        run = p.add_run()
+        run.text = part
+        run.font.size = font_size
+        run.font.bold = True
+        run.font.color.rgb = RGBColor(*_social_color(part))
+        if i < len(parts) - 1:
+            run = p.add_run()
+            run.text = ", "
+            run.font.size = font_size
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
 
 def _crop_to_ratio(path, ratio):
@@ -92,5 +143,9 @@ if __name__ == "__main__":
     out = sys.argv[2] if len(sys.argv) > 2 \
         else os.path.join(root, "EXPORT", "dolphin_overview.pptx")
     cols = int(sys.argv[3]) if len(sys.argv) > 3 else GRID_COLS
-    n = export_dolphin_pptx(Dataset(root).dolphins(), out, cols=cols)
+    ds = Dataset(root)
+    ds.dolphins()
+    ds.social()
+    n = export_dolphin_pptx(ds.dolphins(), out,
+                            social=ds.dolphin_social_map(), cols=cols)
     print("exported %d dolphins (one slide, %d cols) -> %s" % (n, cols, out))

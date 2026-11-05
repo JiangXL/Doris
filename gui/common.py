@@ -211,14 +211,15 @@ class ThumbLoader(QThread):
 class DolphinLoader(ThumbLoader):
     """海豚配对页加载器: 每个条目两张鳍图 (上 DL / 下 DR) 合成一张缩略图。
     每张鳍图先居中裁剪到鳍格宽高比再缩放填满, 拉伸变形由裁剪避免。
-    self._paths 的元素为 (key, dl_path, dr_path); 复用 _load_clean 的磁盘缓存。"""
+    self._paths 的元素为 (key, dl_fid, dr_fid, dl_path, dr_path, social_label);
+    复用 _load_clean 的磁盘缓存。"""
 
     def run(self):
-        for key, dl_fid, dr_fid, dl, dr in self._paths:
+        for key, dl_fid, dr_fid, dl, dr, social in self._paths:
             if self._stop:
                 break
             try:
-                img = self._compose(key, dl_fid, dr_fid, dl, dr)
+                img = self._compose(key, dl_fid, dr_fid, dl, dr, social)
             except Exception:
                 continue  # 单只失败不中断整个加载
             if img is not None and not img.isNull():
@@ -234,7 +235,24 @@ class DolphinLoader(ThumbLoader):
         ch = w * rh // rw  # 图比目标更高: 裁高度
         return img.copy(0, (h - ch) // 2, w, ch)
 
-    def _compose(self, name, dl_fid, dr_fid, dl, dr):
+    _SOCIAL_COLORS = [
+        QColor(255, 99, 71), QColor(30, 144, 255), QColor(255, 215, 0),
+        QColor(50, 205, 50), QColor(255, 105, 180), QColor(0, 206, 209),
+        QColor(255, 165, 0), QColor(148, 0, 211), QColor(0, 255, 127),
+        QColor(255, 69, 0), QColor(100, 149, 237), QColor(220, 20, 60),
+        QColor(0, 191, 255), QColor(255, 20, 147), QColor(124, 252, 0),
+        QColor(255, 218, 185),
+    ]
+
+    @staticmethod
+    def _social_color(label):
+        """为每个 SocialStructure 标签生成稳定、可区分的颜色。"""
+        if not label:
+            return QColor(255, 255, 255)
+        idx = int(hashlib.md5(label.encode("utf-8")).hexdigest(), 16)
+        return DolphinLoader._SOCIAL_COLORS[idx % len(DolphinLoader._SOCIAL_COLORS)]
+
+    def _compose(self, name, dl_fid, dr_fid, dl, dr, social_label=""):
         w, cell = THUMB_SIZE, FIN_CELL_H
         out = QImage(w, cell * 2, QImage.Format_RGB32)
         out.fill(QColor(100, 100, 100))
@@ -259,6 +277,25 @@ class DolphinLoader(ThumbLoader):
             if fid is not None:  # 每格左下角标 DL/DR, 右侧标对应 FinID
                 fid_s = str(fid)
                 p.drawText(6, y0 + cell - 8, fid_s)
+        # SocialStructure 标签: 左上角, 每个组用自己的颜色
+        if social_label:
+            f = p.font()
+            f.setPixelSize(13)
+            f.setBold(True)
+            p.setFont(f)
+            fm = p.fontMetrics()
+            x = 6
+            y = 18
+            parts = [s.strip() for s in social_label.split(",")
+                     if s.strip()]
+            for i, part in enumerate(parts):
+                p.setPen(self._social_color(part))
+                p.drawText(x, y, part)
+                x += fm.horizontalAdvance(part)
+                if i < len(parts) - 1:
+                    p.setPen(QColor(255, 255, 255))
+                    p.drawText(x, y, ", ")
+                    x += fm.horizontalAdvance(", ")
         # 海豚编号居中叠在上下背鳍之间 (半透明底条保证可读)
         f = p.font()
         f.setPixelSize(16)

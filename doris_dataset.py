@@ -26,8 +26,8 @@ class Dataset:
     def __init__(self, root):
         self.root = root
         self.meta_dir = os.path.join(self.root, "METAINFO")
-        self.photo_df = self._load_meta("PHOTO_METAINFO.csv")
-        self.fin_df = self._load_meta("FIN_METAINFO.csv")
+        self.photo_df = self._load_meta("PHOTO_METAINFO.csv").sort_values(by="PhotoName") 
+        self.fin_df = self._load_meta("FIN_METAINFO.csv").sort_values(by="identity") 
         if not self.fin_df.empty:
             self.fin_df["fullpath"] = self.root + "/" + self.fin_df["Path"]
             if "Clear" not in self.fin_df.columns:
@@ -453,6 +453,23 @@ class Dataset:
                     .equals(col.fillna("").astype(str)):
                 self.fin_df["SocialStructure"] = col
                 self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+
+    def dolphin_social_map(self):
+        """返回 {DolphinID: SocialStructure 标签}。
+        对每只海豚取 FIN_METAINFO 中该海豚所有鳍图的非空 SocialStructure 唯一值;
+        单一值直接返回, 多个值用逗号拼接, 无值返回空字符串。
+        """
+        df = self.fin_df
+        if df.empty or "DolphinID" not in df.columns \
+                or "SocialStructure" not in df.columns:
+            return {}
+        sub = df.dropna(subset=["DolphinID"])
+        out = {}
+        for dph, g in sub.groupby("DolphinID"):
+            vals = [str(v).strip() for v in g["SocialStructure"].dropna().unique()
+                    if str(v).strip()]
+            out[str(dph)] = ", ".join(sorted(vals)) if vals else ""
+        return out
 
     def _similarity_matrix(self):
         """懒加载并缓存 FIN_SIMILARITY.npy (与 fin_df 行对齐)。"""
