@@ -360,6 +360,45 @@ class Dataset:
                 pass
         return mapping
 
+    def apply_dolphin_order(self, order):
+        """按给定顺序把所有 DolphinID 重新编号为 Dph001..DphN。
+
+        order: DolphinID 列表, 新编号按列表顺序分配。缺少的海豚按
+        self.dolphins() 原顺序补到末尾。写回 FIN_METAINFO.csv 与
+        DOLPHINS.csv (若存在) 并清空相关缓存。
+        """
+        if not order:
+            return {}
+        df = self.fin_df
+        if df.empty or "DolphinID" not in df.columns:
+            return {}
+        current = set(str(v) for v in df["DolphinID"].dropna().unique())
+        current |= set(self._extra_dolphins())
+        order = list(order)
+        missing = current - set(order)
+        if missing:
+            for name, *_ in self.dolphins():
+                if name in missing and name not in order:
+                    order.append(name)
+        mapping = {old: "Dph%03d" % (i + 1)
+                   for i, old in enumerate(order)}
+        df["DolphinID"] = df["DolphinID"].map(
+            lambda x: mapping.get(str(x), x))
+        self._save_csv(df, "FIN_METAINFO.csv")
+        # 同步 DOLPHINS.csv 中的空海豚记录
+        p = os.path.join(self.meta_dir, "DOLPHINS.csv")
+        if os.path.isfile(p):
+            try:
+                extras = pd.read_csv(p)
+                if "DolphinID" in extras.columns:
+                    extras["DolphinID"] = extras["DolphinID"].astype(str).map(
+                        lambda x: mapping.get(x, x))
+                    extras.to_csv(p, index=False)
+            except Exception:
+                pass
+        self._invalidate_cache()
+        return mapping
+
     # 社会结构: 整组连拍 (按 ShotID) 内出现多于一个 DolphinID 的 shot, 若多个
     #    shot 出现同一组 DolphinID (集合完全相同) 则并入同一 NN 组;
     #    组名 NN001...; 组内只收同一张原图含多个 DolphinID 鳍的图;
@@ -684,6 +723,168 @@ class Dataset:
         nodes = sorted(node_counts.keys(),
                        key=lambda d: (-node_counts[d], d))
         return nodes, edges, node_counts
+
+    def relationship_order(self):
+        """Return DolphinIDs ordered by a heavy Hamiltonian path in the
+        social network: vertices are dolphins, edge weight = number of
+        co-occurring shots. Isolated dolphins (degree 0) are not part of
+        the path and are appended at the end in their original order.
+        For m <= 12 connected dolphins the optimal path is found by DP;
+        for larger m a greedy insertion + 2-opt heuristic is used.
+        """
+        nodes, edges, _ = self.social_network_data()
+        if not nodes:
+            return [d[0] for d in self.dolphins()]
+        idx = {n: i for i, n in enumerate(nodes)}
+        n = len(nodes)
+        W = np.zeros((n, n), dtype=float)
+        degree = [0] * n
+        for u, v, w in edges:
+            iu, iv = idx.get(u), idx.get(v)
+            if iu is not None and iv is not None:
+                W[iu, iv] = W[iv, iu] = float(w)
+                degree[iu] += 1
+                degree[iv] += 1
+        connected_nodes = [nodes[i] for i in range(n) if degree[i] > 0]
+        isolated_nodes = [nodes[i] for i in range(n) if degree[i] == 0]
+        if not connected_nodes:
+            return [d[0] for d in self.dolphins()]
+        sub_idx = {name: k for k, name in enumerate(connected_nodes)}
+        m = len(connected_nodes)
+        W_sub = np.zeros((m, m), dtype=float)
+        for u, v, w in edges:
+            iu, iv = sub_idx.get(u), sub_idx.get(v)
+            if iu is not None and iv is not None:
+                W_sub[iu, iv] = W_sub[iv, iu] = float(w)
+        if m <= 12:
+            order_idx = self._max_hamiltonian_path_exact(W_sub)
+        else:
+            order_idx = self._max_hamiltonian_path_heuristic(W_sub)
+        connected_ordered = [connected_nodes[i] for i in order_idx]
+        ordered = connected_ordered + isolated_nodes
+        # Append any empty/hand-created dolphins not present in the network
+        seen = set(ordered)
+        for name, *_ in self.dolphins():
+            if name not in seen:
+                ordered.append(name)
+        return ordered
+
+    @staticmethod
+    def _max_hamiltonian_path_exact(W):
+        """Held-Karp DP for the maximum-weight Hamiltonian path."""
+        n = W.shape[0]
+        if n == 0:
+            return []
+        if n == 1:
+            return [0]
+        N = 1 << n
+        neg = -np.inf
+        dp = np.full((N, n), neg)
+        for i in range(n):
+            dp[1 << i, i] = 0.0
+        for mask in range(N):
+            if not (mask & (mask - 1)):
+                continue
+            for j in range(n):
+                if not (mask & (1 << j)):
+                    continue
+                prev = mask ^ (1 << j)
+                best = neg
+                for i in range(n):
+                    if i == j or not (prev & (1 << i)):
+                        continue
+                    val = dp[prev, i]
+                    if val == neg:
+                        continue
+                    cand = val + W[i, j]
+                    if cand > best:
+                        best = cand
+                dp[mask, j] = best
+        full = N - 1
+        end = int(np.argmax(dp[full]))
+        order = [end]
+        mask = full
+        while mask & (mask - 1):
+            j = order[-1]
+            prev = mask ^ (1 << j)
+            best_i, best_val = -1, neg
+            for i in range(n):
+                if not (prev & (1 << i)):
+                    continue
+                val = dp[prev, i]
+                if val == neg:
+                    continue
+                cand = val + W[i, j]
+                if cand > best_val:
+                    best_val, best_i = cand, i
+            if best_i < 0:
+                break
+            order.append(best_i)
+            mask = prev
+        order.reverse()
+        return order
+
+    @staticmethod
+    def _max_hamiltonian_path_heuristic(W):
+        """Greedy insertion followed by 2-opt local search."""
+        n = W.shape[0]
+        if n <= 2:
+            return list(range(n))
+        # Start from the heaviest edge
+        best = (-1, 0, 1)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if W[i, j] > best[0]:
+                    best = (W[i, j], i, j)
+        path = [best[1], best[2]]
+        visited = set(path)
+        while len(path) < n:
+            best_insert = (-1, None, 0)  # (gain, node, pos)
+            for x in range(n):
+                if x in visited:
+                    continue
+                # prepend
+                gain = W[x, path[0]]
+                best_pos = 0
+                # insert between path[k] and path[k+1]
+                for k in range(len(path) - 1):
+                    g = W[path[k], x] + W[x, path[k + 1]] - W[path[k], path[k + 1]]
+                    if g > gain:
+                        gain = g
+                        best_pos = k + 1
+                # append
+                g = W[path[-1], x]
+                if g > gain:
+                    gain = g
+                    best_pos = len(path)
+                if gain > best_insert[0]:
+                    best_insert = (gain, x, best_pos)
+            _, x, pos = best_insert
+            path.insert(pos, x)
+            visited.add(x)
+        # 2-opt improvement
+        def _delta(a, b):
+            if a == 0 and b == n - 1:
+                return 0.0
+            if a == 0:
+                return W[path[0], path[b + 1]] - W[path[b], path[b + 1]]
+            if b == n - 1:
+                return W[path[a - 1], path[b]] - W[path[a - 1], path[a]]
+            return (W[path[a - 1], path[b]] + W[path[a], path[b + 1]]
+                    - W[path[a - 1], path[a]] - W[path[b], path[b + 1]])
+        improved = True
+        while improved:
+            improved = False
+            for a in range(n - 1):
+                for b in range(a + 1, n):
+                    d = _delta(a, b)
+                    if d > 1e-9:
+                        path[a:b + 1] = reversed(path[a:b + 1])
+                        improved = True
+                        break
+                if improved:
+                    break
+        return path
 
     def traffic_data(self):
         """返回 Traffic 图数据: (datetimes, dph_counts, distances)。

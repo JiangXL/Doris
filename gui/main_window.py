@@ -160,17 +160,13 @@ class MainWindow(QMainWindow):
                                        else "FIN_METAINFO.csv")
 
         # 5. 海豚配对页: 每只海豚一格, 上 DL 下 DR, DR 格可拖拽交换;
-        #    "新建海豚"按钮创建空海豚供手工配对; 顶栏 "Mode" 图标按钮弹出菜单
+        #    把 DR 鳍拖到空白处可创建新海豚; 顶栏 "Mode" 图标按钮弹出菜单
         #    选择三个互斥模式: Overview=海豚格 (DR 可拖拽交换, 默认) /
         #    Match=匹配面板 / Review=左侧 DolphinID 列表 + 右侧全部鳍图
         tab9 = QWidget()
         lay = QVBoxLayout(tab9)
         lay.setContentsMargins(0, 0, 0, 0)
         top = QHBoxLayout()
-        self._btn_new = QPushButton("新建海豚")
-        self._btn_new.setToolTip("创建一只空海豚 (两格皆空), 可把其它海豚的 DR 拖入")
-        self._btn_new.clicked.connect(self._new_dolphin)
-        top.addWidget(self._btn_new)
         self._dolphin_mode_actions = {}
         menu = QMenu(self)
         for key, text, tip in [
@@ -199,6 +195,12 @@ class MainWindow(QMainWindow):
             "把所有 DolphinID 重新编号为 Dph001..DphN (N=当前海豚总数)")
         self._btn_rename_dph.clicked.connect(self._rename_dolphin_ids)
         top.addWidget(self._btn_rename_dph)
+        self._btn_reorder_rel = QPushButton("Reorder by Relationship")
+        self._btn_reorder_rel.setToolTip(
+            "按社会网络关系 (共同出现次数) 重新排序海豚网格")
+        self._btn_reorder_rel.clicked.connect(
+            self._reorder_dolphins_by_relationship)
+        top.addWidget(self._btn_reorder_rel)
         top.addStretch(1)
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
@@ -206,6 +208,8 @@ class MainWindow(QMainWindow):
         self._dolphin_tab.show_dolphins(ds.dolphins(),
                                         social=ds.dolphin_social_map())
         self._dolphin_tab.dr_swapped.connect(self._swap_dolphin_dr)
+        self._dolphin_tab.dr_dropped_on_empty.connect(
+            self._create_dolphin_from_dr)
         self._match_panel = MatchPanel(ds.dolphin_candidates)
         self._match_panel.assign_requested.connect(self._match_assign)
         self._match_panel.unmatch_requested.connect(self._match_unmatch)
@@ -281,7 +285,7 @@ class MainWindow(QMainWindow):
             act.setChecked(k == mode)
         self._dolphin_mode_btn.setText(
             "Mode: %s" % self._dolphin_mode_actions[mode].text())
-        self._btn_new.setVisible(mode != "review")  # 审阅列表与新建无关
+        self._btn_reorder_rel.setVisible(mode == "overview")
         if mode == "review":
             self._dolphin_review_tab.set_groups(self.ds.dolphin_groups(),
                                                 keep_current=True)
@@ -321,31 +325,58 @@ class MainWindow(QMainWindow):
         self._refresh_dolphin_review()
         self._refresh_stats()
 
-    def _new_dolphin(self):
-        """新建空海豚并刷新 Dolphin 页。"""
-        self.ds.new_dolphin()
-        social_map = self.ds.dolphin_social_map()
-        self._dolphin_tab.show_dolphins(self.ds.dolphins(), social=social_map)
-        self._refresh_dolphin_review()
+    def _create_dolphin_from_dr(self, src_name):
+        """Overview 模式: 把某海豚的 DR 鳍拖到空白处, 创建新海豚并分配该鳍。"""
+        dr_fid = None
+        for name, _, dr, _, _ in self.ds.dolphins():
+            if name == src_name:
+                dr_fid = dr
+                break
+        if dr_fid is None:
+            return
+        try:
+            new_name = self.ds.new_dolphin()
+            self.ds.assign_dolphin_fin(new_name, str(dr_fid), "DR")
+        except Exception as e:
+            QMessageBox.warning(self, "创建新海豚失败", str(e))
+            return
+        self._refresh_tabs()
 
     def _rename_dolphin_ids(self):
-        """Dolphin 页顶栏 Rename ID: 重新编号所有 DolphinID 并刷新界面。"""
+        """Dolphin 页顶栏 Rename ID: 按当前 Overview 顺序重新编号。
+        若 Overview 网格尚无记录, 则按现有 DolphinID 数值顺序重命名。"""
         reply = QMessageBox.question(
             self, "Rename ID",
             "确定把所有 DolphinID 重新编号为 Dph001..DphN 吗?")
         if reply != QMessageBox.Yes:
             return
+        order = self._dolphin_tab.current_order()
         try:
-            self.ds.rename_dolphin_ids()
+            if order:
+                self.ds.apply_dolphin_order(order)
+            else:
+                self.ds.rename_dolphin_ids()
         except Exception as e:
             QMessageBox.warning(self, "重命名失败", str(e))
             return
-        social_map = self.ds.dolphin_social_map()
-        self._dolphin_tab.show_dolphins(self.ds.dolphins(), social=social_map)
-        self._refresh_dolphin_review()
-        self._refresh_stats()
-        # Social Structure / Dolphin Review 等脏页标记刷新
         self._refresh_tabs()
+
+    def _reorder_dolphins_by_relationship(self):
+        """按社会网络关系重新排序 Overview 模式的海豚网格 (不改 DolphinID)。"""
+        try:
+            order = self.ds.relationship_order()
+        except Exception as e:
+            QMessageBox.warning(self, "排序失败", str(e))
+            return
+        if not order:
+            return
+        dolph_map = {d[0]: d for d in self.ds.dolphins()}
+        reordered = [dolph_map[name] for name in order if name in dolph_map]
+        for d in self.ds.dolphins():
+            if d[0] not in dolph_map or d[0] not in order:
+                reordered.append(d)
+        social_map = self.ds.dolphin_social_map()
+        self._dolphin_tab.show_dolphins(reordered, social=social_map)
 
     def _swap_dolphin_dr(self, src, dst):
         """Dolphin 页拖 DR 格到其它海豚: 交换/移动 DR 配对后刷新本页。"""

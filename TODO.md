@@ -35,4 +35,4 @@
 1. New dolphin 
 2. Low quality 60
 [x] marker the dolhpin with NN label, assign the same font color for the same group
-[] 根据 NN 排序 DphID
+[x] 根据 NN 排序 DphID

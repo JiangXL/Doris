@@ -31,7 +31,9 @@ class DolphinTab(QListWidget):
     双击鳍图 (上半格 DL / 下半格 DR) 打开大图查看窗口。"""
 
     dr_swapped = pyqtSignal(str, str)  # (源 Dph 名, 目标 Dph 名)
+    dr_dropped_on_empty = pyqtSignal(str)  # 源 Dph 名
     DR_MIME = "application/x-doris-dolphin-dr"
+    DOLPHIN_MIME = "application/x-doris-dolphin-cell"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,17 +61,24 @@ class DolphinTab(QListWidget):
         self.viewport().setAcceptDrops(True)
         self._loaders = []
         self._items = {}
+        self._press_top = False     # 按下位置是否在 DL (上) 格
         self._press_bottom = False  # 按下位置是否在 DR (下) 格
+        self._dolphin_order = []
+        self._dolphin_data = {}
+        self._social = {}
 
     def show_dolphins(self, dolphins, social=None):
         """dolphins: [(name, dl_fid, dr_fid, dl_path, dr_path)];
         social: {DolphinID: SocialStructure 标签}; 显示在每个海豚格左上角。
         后台分片加载合成缩略图。"""
+        self._dolphin_order = [d[0] for d in dolphins]
+        self._dolphin_data = {d[0]: d for d in dolphins}
+        self._social = social or {}
         self._stop_loaders()
         self.clear()
         self._items = {}
         cell = FIN_CELL_H
-        social = social or {}
+        social = self._social
         for name, dl_fid, dr_fid, dl, dr in dolphins:
             item = QListWidgetItem()  # 名称由合成图画在上下鳍之间, 不再用顶部条
             item.setData(Qt.UserRole, (name, dl_fid, dr_fid, dl, dr))
@@ -95,6 +104,10 @@ class DolphinTab(QListWidget):
             loader.start()
             self._loaders.append(loader)
 
+    def current_order(self):
+        """Return the current display order of DolphinIDs."""
+        return list(self._dolphin_order)
+
     def _stop_loaders(self):
         for l in self._loaders:
             l.stop()
@@ -109,12 +122,14 @@ class DolphinTab(QListWidget):
 
     # -- DR 格拖拽交换 -------------------------------------------------------
     def mousePressEvent(self, event):
+        self._press_top = False
         self._press_bottom = False
         if event.button() == Qt.LeftButton:
             item = self.itemAt(event.pos())
             if item is not None:
                 r = self.visualItemRect(item)
                 self._press_bottom = event.pos().y() > r.top() + r.height() // 2
+                self._press_top = not self._press_bottom
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
@@ -130,12 +145,26 @@ class DolphinTab(QListWidget):
         super().mouseDoubleClickEvent(event)
 
     def startDrag(self, actions):
-        """只有按下点在 DR 格且该海豚有 DR 时才可拖出; 拖拽图为下半格。"""
+        """上半格 (DL) 拖拽用于重排海豚格, 下半格 (DR) 拖拽用于交换/移动 DR 鳍。"""
         item = self.currentItem()
-        if item is None or not self._press_bottom:
+        if item is None:
             return
         name, dl_fid, dr_fid, dl, dr = item.data(Qt.UserRole)
-        if dr_fid is None:
+        if self._press_top:
+            # 移动整个海豚格
+            md = QMimeData()
+            md.setData(self.DOLPHIN_MIME, name.encode("utf-8"))
+            drag = QDrag(self)
+            drag.setMimeData(md)
+            pm = item.icon().pixmap(THUMB_SIZE, FIN_CELL_H * 2)
+            if pm.isNull():
+                pm = QPixmap(96, 128)
+                pm.fill(Qt.lightGray)
+            drag.setPixmap(pm)
+            drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
+            drag.exec_(Qt.MoveAction)
+            return
+        if not self._press_bottom or dr_fid is None:
             return
         md = QMimeData()
         md.setData(self.DR_MIME, name.encode("utf-8"))
@@ -151,34 +180,88 @@ class DolphinTab(QListWidget):
         drag.exec_(Qt.MoveAction)
 
     def dragEnterEvent(self, event):
-        # 只认本页自定义的 DR_MIME; 不检查 event.source() (PyQt 包装对象
-        # 身份比较不可靠, 可能导致真实拖拽被误拒)
-        if event.mimeData().hasFormat(self.DR_MIME):
+        # 接受海豚格重排 (DOLPHIN_MIME) 与 DR 鳍交换 (DR_MIME)
+        if event.mimeData().hasFormat(self.DR_MIME) \
+                or event.mimeData().hasFormat(self.DOLPHIN_MIME):
             event.setDropAction(Qt.MoveAction)
             event.accept()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasFormat(self.DR_MIME):
+        if event.mimeData().hasFormat(self.DR_MIME) \
+                or event.mimeData().hasFormat(self.DOLPHIN_MIME):
             event.setDropAction(Qt.MoveAction)
             event.accept()
         else:
             event.ignore()
 
     def dropEvent(self, event):
-        item = self.itemAt(event.pos())
-        if item is None or not event.mimeData().hasFormat(self.DR_MIME):
+        md = event.mimeData()
+        if md.hasFormat(self.DOLPHIN_MIME):
+            src = bytes(md.data(self.DOLPHIN_MIME)).decode("utf-8")
+            if not src:
+                event.ignore()
+                return
+            item = self.itemAt(event.pos())
+            if item is None:
+                self._move_dolphin_to_end(src)
+            else:
+                dst = item.data(Qt.UserRole)[0]
+                if src != dst:
+                    self._move_dolphin_before(src, dst)
+                else:
+                    event.ignore()
+                    return
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return
+        if not md.hasFormat(self.DR_MIME):
             event.ignore()
             return
-        src = bytes(event.mimeData().data(self.DR_MIME)).decode("utf-8")
+        src = bytes(md.data(self.DR_MIME)).decode("utf-8")
+        if not src:
+            event.ignore()
+            return
+        item = self.itemAt(event.pos())
+        if item is None:
+            # 拖到空白处: 用该海豚的 DR 鳍创建一只新海豚
+            self.dr_dropped_on_empty.emit(src)
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+            return
         dst = item.data(Qt.UserRole)[0]
-        if src and src != dst:
+        if src != dst:
             self.dr_swapped.emit(src, dst)
             event.setDropAction(Qt.MoveAction)
             event.accept()
         else:
             event.ignore()
+
+    def _move_dolphin_before(self, src, dst):
+        """把 src 海豚移到 dst 海豚前面。"""
+        if src == dst or src not in self._dolphin_order:
+            return
+        order = list(self._dolphin_order)
+        order.remove(src)
+        idx = order.index(dst) if dst in order else len(order)
+        order.insert(idx, src)
+        self._apply_dolphin_order(order)
+
+    def _move_dolphin_to_end(self, src):
+        """把 src 海豚移到末尾。"""
+        if src not in self._dolphin_order:
+            return
+        order = list(self._dolphin_order)
+        order.remove(src)
+        order.append(src)
+        self._apply_dolphin_order(order)
+
+    def _apply_dolphin_order(self, order):
+        """按 order 重新显示海豚格 (不改底层 DolphinID)。"""
+        reordered = [self._dolphin_data[name] for name in order
+                     if name in self._dolphin_data]
+        self.show_dolphins(reordered, self._social)
 
 
 class FinSlot(QLabel):
@@ -508,7 +591,7 @@ class MatchPanel(QWidget):
         self.dolphin_list.viewport().setAcceptDrops(True)
         self.dolphin_list.setWordWrap(False)
         self.dolphin_list.setTextElideMode(Qt.ElideNone)
-        self.dolphin_list.setMaximumWidth(180)
+        self.dolphin_list.setMaximumWidth(200)
         self.dolphin_list.currentRowChanged.connect(self._on_select)
         lay.addWidget(self.dolphin_list, 0)
         # 海豚列表也接受鳍格拖出 (落点之一)
@@ -602,9 +685,9 @@ class MatchPanel(QWidget):
         self.dolphin_list.blockSignals(True)
         self.dolphin_list.clear()
         for name, dl, dr, _, _ in self._dolphins:
-            QListWidgetItem("%s  DL=%s DR=%s"
-                            % (name, dl if dl is not None else "-",
-                               dr if dr is not None else "-"),
+            QListWidgetItem("%s  L=%s R=%s"
+                            % (name, dl if dl is not None else "None  ",
+                               dr if dr is not None else "None  "),
                             self.dolphin_list)
         self.dolphin_list.blockSignals(False)
         if not self._dolphins:
