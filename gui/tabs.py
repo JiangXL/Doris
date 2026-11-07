@@ -860,8 +860,10 @@ class StatisticsTab(QWidget):
         self.fig_dolphin = Figure()
         self.fig_social = Figure()
         self.fig_traffic = Figure()
+        self.fig_timeline = Figure()
         self._social_data = (None, None, None)
         self._traffic_data = ([], [], [])
+        self._timeline_data = ([], {})
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -887,8 +889,9 @@ class StatisticsTab(QWidget):
         left.addWidget(FigureCanvasQTAgg(self.fig_social))
         right.addWidget(FigureCanvasQTAgg(self.fig_pie))
         right.addWidget(FigureCanvasQTAgg(self.fig_dolphin))
-        right.addWidget(FigureCanvasQTAgg(self.fig_clear))
+        #right.addWidget(FigureCanvasQTAgg(self.fig_clear))
         right.addWidget(FigureCanvasQTAgg(self.fig_traffic))
+        right.addWidget(FigureCanvasQTAgg(self.fig_timeline))
         plots.addLayout(left, 2)
         plots.addLayout(right, 1)
         main_layout.addLayout(plots)
@@ -917,16 +920,17 @@ class StatisticsTab(QWidget):
             QMessageBox.warning(self, "保存失败", str(e))
 
     def _render_overview(self, fig):
-        """在传入的 Figure 上绘制整页统计图 (4 行 x 2 列布局)。"""
+        """在传入的 Figure 上绘制整页统计图 (5 行 x 2 列布局)。"""
         from matplotlib.gridspec import GridSpec
-        gs = GridSpec(4, 2, figure=fig, width_ratios=[2, 1])
+        gs = GridSpec(5, 2, figure=fig, width_ratios=[2, 1])
         ax1 = fig.add_subplot(gs[0, 0])
         ax2 = fig.add_subplot(gs[1, 0])
-        ax3 = fig.add_subplot(gs[2:4, 0])
+        ax3 = fig.add_subplot(gs[2:5, 0])
         ax4 = fig.add_subplot(gs[0, 1])
         ax5 = fig.add_subplot(gs[1, 1])
         ax6 = fig.add_subplot(gs[2, 1])
         ax7 = fig.add_subplot(gs[3, 1])
+        ax8 = fig.add_subplot(gs[4, 1])
 
         self._draw_stacked_bar(
             ax1, self._fin_counts, "Fin images per FinID", fontsize=10,
@@ -945,6 +949,7 @@ class StatisticsTab(QWidget):
         self._draw_hist(ax6, self._clear_values, "Clearness distribution",
                         fontsize=8)
         self._draw_traffic(ax7, self._traffic_data, fontsize=8)
+        self._draw_timeline(ax8, self._timeline_data, fontsize=8)
         fig.tight_layout()
 
     def _draw_bar(self, ax, counts, title, fontsize=5):
@@ -1139,6 +1144,38 @@ class StatisticsTab(QWidget):
         fig.tight_layout()
         fig.canvas.draw_idle()
 
+    def _draw_timeline(self, ax, timeline_data, fontsize=7):
+        """Time Line 图: x=时间, y=DphID, 每条水平棒为一只海豚在某 shot 的出现时段。"""
+        from matplotlib.dates import DateFormatter
+        dph_ids, intervals = timeline_data
+        ax.clear()
+        if not dph_ids:
+            ax.set_title("Time Line (no data)")
+            ax.axis("off")
+            return
+        for y, dph in enumerate(dph_ids):
+            for start, end in intervals.get(dph, []):
+                width = end - start
+                ax.barh(y, width, left=start, height=0.6,
+                        color="black", alpha=1)
+        ax.set_yticks(range(len(dph_ids)))
+        ax.set_yticklabels(dph_ids, fontsize=fontsize)
+        ax.set_title("Time Line")
+        ax.set_xlabel("Time")
+        ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+        for label in ax.get_xticklabels():
+            label.set_rotation(30)
+            label.set_horizontalalignment("right")
+        ax.set_ylim(-0.5, len(dph_ids) - 0.5)
+        ax.margins(x=0.02)
+
+    def _timeline(self, fig, timeline_data):
+        fig.clear()
+        ax = fig.add_subplot(111)
+        self._draw_timeline(ax, timeline_data)
+        fig.tight_layout()
+        fig.canvas.draw_idle()
+
     def _draw_pie(self, ax, aspect_counts, title, fontsize=9):
         if aspect_counts:
             labels = [k for k, _ in aspect_counts]
@@ -1155,7 +1192,8 @@ class StatisticsTab(QWidget):
         fig.canvas.draw_idle()
 
     def show_stats(self, fin_counts, shot_counts, aspect_counts, clear_values,
-                   dolphin_shot_counts, social_network_data, traffic_data=([], [], [])):
+                   dolphin_shot_counts, social_network_data,
+                   traffic_data=([], [], []), timeline_data=([], {})):
         self._fin_counts = fin_counts
         self._shot_counts = shot_counts
         self._aspect_counts = aspect_counts
@@ -1163,6 +1201,7 @@ class StatisticsTab(QWidget):
         self._dolphin_shot_counts = dolphin_shot_counts
         self._social_data = social_network_data
         self._traffic_data = traffic_data
+        self._timeline_data = timeline_data
 
         self._bar(self.fig_hist, fin_counts, "Fin images per FinID")
         self._bar(self.fig_shot, shot_counts, "Shots per FinID")
@@ -1171,8 +1210,9 @@ class StatisticsTab(QWidget):
         self._hist(self.fig_clear, clear_values, "Clearness distribution")
         self._pie(self.fig_pie, aspect_counts, "Fin aspect distribution")
         self._social_network(self.fig_social, social_network_data,
-                             "Dolphin social network")
+                             "Subgroup Network")
         self._traffic(self.fig_traffic, traffic_data)
+        self._timeline(self.fig_timeline, timeline_data)
 
 
 class StepRunner(QThread):

@@ -934,6 +934,56 @@ class Dataset:
             first["distance"].tolist(),
         )
 
+    def timeline_data(self):
+        """返回 Time Line 图数据: (dph_ids, intervals)。
+
+        对每只海豚, 收集它出现的所有 ShotID, 并取每 shot 的时间区间
+        (min Datetimesec -> max Datetimesec)。
+        dph_ids 按每只海豚的最早出现时间排序;
+        intervals: dict[DolphinID, list[(start_datetime, end_datetime)]]。
+        """
+        if self.photo_df.empty or "ShotID" not in self.photo_df.columns \
+                or "Datetimesec" not in self.photo_df.columns \
+                or self.fin_df.empty or "DolphinID" not in self.fin_df.columns \
+                or "ShotID" not in self.fin_df.columns:
+            return [], {}
+        photo = self.photo_df.copy()
+        photo["ShotID"] = photo["ShotID"].astype(str)
+        photo["datetime"] = pd.to_datetime(
+            photo["Datetimesec"], format="%Y:%m:%d %H:%M:%S.%f",
+            errors="coerce")
+        photo = photo.dropna(subset=["datetime"])
+        if photo.empty:
+            return [], {}
+        # 每 shot 的时间区间, 最短保留 0.02 分钟以便在图上可见
+        min_dur = pd.Timedelta(minutes=0.02)
+        shot_times = photo.groupby("ShotID")["datetime"].agg(["min", "max"])
+        shot_times.columns = ["start", "end"]
+        too_short = (shot_times["end"] - shot_times["start"]) < min_dur
+        shot_times.loc[too_short, "end"] = \
+            shot_times.loc[too_short, "start"] + min_dur
+
+        df = self.fin_df.dropna(subset=["DolphinID", "ShotID"])
+        df["ShotID"] = df["ShotID"].astype(str)
+        intervals = {}
+        first_time = {}
+        for dph, g in df.groupby("DolphinID"):
+            dph = str(dph)
+            shots = set(g["ShotID"].astype(str))
+            ivs = []
+            for sid in shots:
+                if sid not in shot_times.index:
+                    continue
+                start = shot_times.at[sid, "start"]
+                end = shot_times.at[sid, "end"]
+                ivs.append((start, end))
+            if ivs:
+                ivs.sort()
+                intervals[dph] = ivs
+                first_time[dph] = min(s for s, _ in ivs)
+        dph_ids = sorted(intervals.keys(), key=lambda d: (first_time[d], d))
+        return dph_ids, intervals
+
     # 9. 海豚配对: DL/DR 鳍配对
     def _extra_dolphins(self):
         """DOLPHINS.csv 中用户手工创建的空海豚名列表。"""

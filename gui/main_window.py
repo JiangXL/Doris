@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
         self._stats_tab.show_stats(
             ds.fin_id_counts(), ds.fin_id_shot_counts(), ds.aspect_counts(),
             ds.clearness_values(), ds.dolphin_shot_counts(),
-            ds.social_network_data(), ds.traffic_data())
+            ds.social_network_data(), ds.traffic_data(), ds.timeline_data())
         idx = self.tabs.addTab(self._stats_tab, "Statistics")
         self._tab_requires[idx] = "FIN_METAINFO.csv"
 
@@ -392,7 +392,8 @@ class MainWindow(QMainWindow):
                 self.ds.fin_id_counts(), self.ds.fin_id_shot_counts(),
                 self.ds.aspect_counts(), self.ds.clearness_values(),
                 self.ds.dolphin_shot_counts(),
-                self.ds.social_network_data(), self.ds.traffic_data())
+                self.ds.social_network_data(), self.ds.traffic_data(),
+                self.ds.timeline_data())
 
     def _edit_box(self, path, action, index, new_box=None):
         """全图查看器的鳍框编辑回调: 更新 CSV 与裁剪图, 并刷新相关 tab 缩略图。"""
