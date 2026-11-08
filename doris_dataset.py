@@ -993,6 +993,46 @@ class Dataset:
         dph_ids = sorted(intervals.keys(), key=lambda d: (first_time[d], d))
         return dph_ids, intervals
 
+    def low_quality_photos(self):
+        """返回所有属于 "Low Quality" 的原始照片绝对路径。
+
+        逻辑与 Step6a_export_database.export_low_quality_images 一致:
+        - PHOTO_METAINFO 中有、但 FIN_METAINFO 中没有任何鳍框的照片;
+        - 或有鳍框, 但没有任何一条鳍同时满足 DolphinID 非空且 Clear==True 的照片。
+        返回路径按文件名排序, 只返回磁盘上存在的文件。
+        """
+        if self.photo_df.empty or "PhotoName" not in self.photo_df.columns:
+            return []
+        all_photos = set(self.photo_df["PhotoName"].dropna().astype(str))
+        if not all_photos:
+            return []
+        low = set()
+        if not self.fin_df.empty and "PhotoName" in self.fin_df.columns:
+            all_orig = set(self.fin_df["PhotoName"].dropna().astype(str))
+            # 没有任何鳍框
+            low |= all_photos - all_orig
+            # 有鳍但无 DolphinID 或没有 Clear==True 的鳍
+            if "DolphinID" in self.fin_df.columns:
+                with_dph = self.fin_df.dropna(subset=["DolphinID"])
+                if "Clear" in with_dph.columns:
+                    clear_mask = with_dph["Clear"].astype(str).str.lower() \
+                        .isin(("true", "1"))
+                    with_dph_and_clear = set(
+                        with_dph.loc[clear_mask, "PhotoName"].dropna().astype(str))
+                else:
+                    with_dph_and_clear = set()
+            else:
+                with_dph_and_clear = set()
+            low |= all_orig - with_dph_and_clear
+        else:
+            low = all_photos
+        out = []
+        for name in sorted(low):
+            p = os.path.join(self.root, str(name))
+            if os.path.isfile(p):
+                out.append(p)
+        return out
+
     # 9. 海豚配对: DL/DR 鳍配对
     def _extra_dolphins(self):
         """DOLPHINS.csv 中用户手工创建的空海豚名列表。"""
@@ -1165,6 +1205,7 @@ class Dataset:
                 and "fullpath" in df.columns:
             sub = df.dropna(subset=["DolphinID", "fullpath"])
             for name, g in sub.groupby("DolphinID", sort=True):
+                sorted_g = g.sort_values(by="Aspect")
                 groups[str(name)] = [p for p in g["fullpath"]
                                      if isinstance(p, str)]
         # 补上空海豚 (无鳍图)

@@ -35,6 +35,10 @@ class MainWindow(QMainWindow):
             if getattr(self._stats_tab, "_needs_refresh", False):
                 self._rebuild_stats()
             return
+        if w is getattr(self, "_low_quality_tab", None):
+            if getattr(self._low_quality_tab, "_needs_refresh", False):
+                self._rebuild_low_quality()
+            return
         for title, tab, fn in self._group_tabs:
             if tab is w:
                 if getattr(tab, "_needs_refresh", False):
@@ -271,6 +275,18 @@ class MainWindow(QMainWindow):
         idx = self.tabs.addTab(self._stats_tab, "Statistics")
         self._tab_requires[idx] = "FIN_METAINFO.csv"
 
+        # 8. 低质量页: 列出无鳍或没有 Clear+已分配 DolphinID 的原始照片
+        self._low_quality_tab = QWidget()
+        lq_lay = QVBoxLayout(self._low_quality_tab)
+        lq_lay.setContentsMargins(0, 0, 0, 0)
+        self._low_quality_grid = ImageGrid()
+        self._low_quality_grid.set_box_editor(self._edit_box)
+        lq_lay.addWidget(self._low_quality_grid)
+        idx = self.tabs.addTab(self._low_quality_tab, "Low Quality")
+        self._tab_requires[idx] = "FIN_METAINFO.csv"
+        self._low_quality_tab._needs_refresh = False
+        self._rebuild_low_quality()
+
         # 根据已有元数据启用/禁用对应标签页; 流水线完成后信号会再次刷新
         self._refresh_tab_enablement()
 
@@ -483,6 +499,16 @@ class MainWindow(QMainWindow):
         if self._stats_tab is not None:
             self._stats_tab._needs_refresh = False
 
+    def _rebuild_low_quality(self):
+        """重建 Low Quality 页: 列出所有低质量原图。"""
+        if self._low_quality_grid is None:
+            return
+        paths = self.ds.low_quality_photos()
+        self._low_quality_grid.show_images(
+            paths, boxes=self.ds.fin_boxes(), labels=self.ds.fin_shot_labels())
+        if self._low_quality_tab is not None:
+            self._low_quality_tab._needs_refresh = False
+
     def _refresh_tabs(self, origin=None):
         """元数据被拖拽改组更新后, 只刷新可见标签页; 隐藏页标记脏。
         切换标签页时再由 _on_tab_changed 重建。"""
@@ -520,3 +546,9 @@ class MainWindow(QMainWindow):
                 self._rebuild_stats()
             else:
                 self._stats_tab._needs_refresh = True
+        # 低质量页
+        if self._low_quality_tab is not None:
+            if self._low_quality_tab.isVisible():
+                self._rebuild_low_quality()
+            else:
+                self._low_quality_tab._needs_refresh = True

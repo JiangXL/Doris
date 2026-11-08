@@ -52,16 +52,6 @@ class FinSorter:
             raise FileNotFoundError("Feature file not found: %s" % npy_path)
         self.features = np.load(npy_path)
 
-    def filter_fin_by_clearness(self, clearness_threshold, crop_conf_threshold):
-        """Compute statistics after applying thresholds."""
-        self.metainfo["Select"] = (
-          (self.metainfo["Clearness"] > clearness_threshold)
-          * (self.metainfo["CropConf"] > crop_conf_threshold)
-        )
-        self.metainfo["Clear"] = (
-            self.metainfo["Clearness"] > clearness_threshold
-        )
-
     def compute_similarity(self):
         """Compute cosine similarity matrix between all features."""
         feats = self.features
@@ -373,6 +363,7 @@ class FinSorter:
         aspect_mask = self.metainfo["Aspect"].isin(["DL", "DR"]).to_numpy()
         clear_mask = self.metainfo["Clear"].isin([1]).to_numpy()
         candidate_mask = best_mask & aspect_mask & clear_mask
+        #TODO: whether clear_mask is necessary if best_mask exists
 
         candidate_idx = np.flatnonzero(candidate_mask.to_numpy())
         classes = self.metainfo["Aspect"].to_numpy()
@@ -439,18 +430,20 @@ class FinSorter:
         print("Found %s photos have multiple fins" % (occurred_number))
 
     def save_results(self):
-        """Save FinID to metainfo CSV."""
+        """Save FinID to metainfo CSV and save both baseline and live similarity."""
         print("Update FIN_METAINFO.csv")
         self.metainfo["FinID"] = self.fin_id_list
         self.metainfo.to_csv(self.metainfo_csv, index=False)
         print("Save FIN_SIMILARITY.npy")
         np.save(self.similarity_npy, self.similarity)
+        # 同时保存 FIN_CONNECTION.npy 作为可编辑的活矩阵
+        import shutil
+        conn_path = self.similarity_npy.replace("FIN_SIMILARITY", "FIN_CONNECTION")
+        shutil.copy2(self.similarity_npy, conn_path)
 
     def sort(self):
         """Execute the full sorting pipeline."""
         self.load_data()
-        #self.filter_fin_by_clearness(
-        #        clearness_threshold=0.15, crop_conf_threshold=0.4)
         self.compute_similarity()
         self.exclude_same_photo_duplicates()
         #self.correct_fin_class_by_shot()

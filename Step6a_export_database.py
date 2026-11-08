@@ -87,19 +87,20 @@ class DatabaseExporter:
         folder = os.path.join(self.root_dir, "EXPORT", "Quality below 60")
         low = set()
         photo = self.photo_df
-        # 无鳍的原图 
         if photo is not None and not photo.empty:
-            m = photo["FinCount"] == 0
-            low |= set(photo.loc[m, "PhotoName"].astype(str))
+            all_photos = set(photo["PhotoName"])
         else:
             print("Miss valid PHOTO_METAINFO.csv")
         fin = self.fin_df
         if not fin.empty and "PhotoName" in fin.columns:
-            # 有鳍但没有 DolphinID & Clear==True 的照片
             all_orig = set(fin["PhotoName"].dropna())
+            # 无鳍的原图 
+            low |= all_photos - all_orig
+            # 有鳍但没有 DolphinID & Clear==True 的照片
             if "DolphinID" in fin.columns:
                 with_dph = fin.dropna(subset=["DolphinID"])
                 with_dph_and_clear = with_dph.query('Clear == True')
+                # need to confirm
                 with_dph_and_clear = set(with_dph_and_clear["PhotoName"].dropna())
             else:
                 with_dph = set()
