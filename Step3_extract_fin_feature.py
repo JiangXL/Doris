@@ -1,11 +1,10 @@
-#!/usr/bin/env python
 # coding: utf-8
-# 提取背鳍特征（通用版，不依赖 wildlife_tools）
-#   - 只用 torch + timm + pandas + PIL，wildlife_tools 只是一个薄封装
+# 提取背鳍特征
+#   - 只用 torch + timm + pandas + PIL
 #     （ImageDataset = 普通 Dataset；DeepFeatures = 批量前向传播）
 #   - 支持任意 timm 模型（默认 MegaDescriptor-L-384，用本地权重完全离线加载），
 #     可加载本地微调权重
-#   - 输出：  通用格式 FIN_DEEPFEATURES.npy（特征矩阵）+ FIN_DEEPFEATURES.csv（对应图片路径）
+#   - 输出：  FIN_DEEPFEATURES.npy（特征矩阵）+ FIN_DEEPFEATURES.csv（对应图片路径）
 
 import os
 
@@ -130,7 +129,6 @@ class FinFeatureExtractorGeneral:
 
     def _save(self, out_path, features, metadata, root_dir):
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
         # 通用格式：特征矩阵 + 行对应的图片路径
         np.save(out_path + '.npy', features)
         metadata.to_csv(out_path + '.csv', columns=["PhotoName", "Path"], index=False)

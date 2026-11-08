@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QMessageBox, QGraphicsView, QGraphicsScene,
     QStyledItemDelegate, QStyle, QStyleOptionViewItem, QShortcut,
     QHBoxLayout, QPushButton, QMenu, QGraphicsRectItem,
-    QGraphicsTextItem, QGraphicsItem,
+    QGraphicsTextItem, QGraphicsItem, QInputDialog,
 )
 from PyQt5.QtGui import (
     QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter,
@@ -893,6 +893,9 @@ class ImageViewerDialog(QDialog):
         self._edit_mode = False
         self._edit_items = []
         self._edit_original_rects = []
+        self._add_mode = False
+        self._add_start = None
+        self._add_rect_item = None
         self.resize(1200, 800)
 
         self._scene = QGraphicsScene(self)
@@ -976,7 +979,82 @@ class ImageViewerDialog(QDialog):
         self.view.setDragMode(QGraphicsView.ScrollHandDrag)
         self._show(self._index)
 
+    def _enter_add_mode(self):
+        """进入画新鳍框模式: 左键拖拽画框。"""
+        if self._box_editor is None:
+            return
+        self._add_mode = True
+        self._add_start = None
+        self._add_rect_item = None
+        self.view.setDragMode(QGraphicsView.NoDrag)
+        self.view.viewport().installEventFilter(self)
+
+    def _cancel_add_mode(self):
+        """取消画框模式。"""
+        self._add_mode = False
+        self._add_start = None
+        if self._add_rect_item is not None:
+            self._scene.removeItem(self._add_rect_item)
+            self._add_rect_item = None
+        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.view.viewport().removeEventFilter(self)
+
+    def _finish_add_box(self, rect):
+        """拖拽完成后询问 Aspect 并回调 box_editor(action='add')。"""
+        path = self._paths[self._index]
+        pm = self._item.pixmap() if self._item is not None else None
+        if pm is None or pm.isNull():
+            return
+        x0 = max(0, int(rect.left()))
+        y0 = max(0, int(rect.top()))
+        x1 = min(pm.width(), int(rect.right()))
+        y1 = min(pm.height(), int(rect.bottom()))
+        if x1 - x0 < 5 or y1 - y0 < 5:
+            return
+        aspect, ok = QInputDialog.getItem(
+            self, "Add Fin", "Aspect:", ["DL", "DR", "Others"], 0, False)
+        if not ok:
+            return
+        box = (x0, y0, x1, y1, str(aspect), None)
+        updated = self._box_editor(path, "add", None, box)
+        if updated is not None:
+            self._boxes[path] = updated
+        self._show(self._index)
+
+    def eventFilter(self, obj, event):
+        if not self._add_mode or obj is not self.view.viewport():
+            return super().eventFilter(obj, event)
+        if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+            self._add_start = self.view.mapToScene(event.pos())
+            self._add_rect_item = self._scene.addRect(
+                QRectF(self._add_start, self._add_start),
+                QPen(QColor(0, 160, 255), 2))
+            return True
+        if event.type() == event.MouseMove and self._add_rect_item is not None:
+            end = self.view.mapToScene(event.pos())
+            self._add_rect_item.setRect(QRectF(self._add_start, end).normalized())
+            return True
+        if event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton \
+                and self._add_rect_item is not None:
+            end = self.view.mapToScene(event.pos())
+            rect = QRectF(self._add_start, end).normalized()
+            self._scene.removeItem(self._add_rect_item)
+            self._add_rect_item = None
+            self._add_mode = False
+            self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+            self.view.viewport().removeEventFilter(self)
+            self._finish_add_box(rect)
+            return True
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
+        if self._add_mode:
+            if event.key() == Qt.Key_Escape:
+                self._cancel_add_mode()
+                event.accept()
+                return
+            event.accept()
+            return
         if self._edit_mode:
             if event.key() == Qt.Key_Escape:
                 self._exit_edit_mode(save=False)
@@ -1009,6 +1087,9 @@ class ImageViewerDialog(QDialog):
             self.view.zoom(1.25)          # =/+ 放大
         elif event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
             self.view.zoom(0.8)           # - 缩小
+        elif event.key() == Qt.Key_A and self._box_editor is not None:
+            self._enter_add_mode()
+            event.accept()
         elif event.key() == Qt.Key_W and \
                 event.modifiers() & Qt.ControlModifier:
             self.close()                  # Ctrl+W 关闭
@@ -1035,19 +1116,25 @@ class ImageViewerDialog(QDialog):
             super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
-        """右键菜单: 编辑框 / 排除 / 标记最佳; 编辑模式下显示保存/取消。"""
+        """右键菜单: 编辑框 / 添加鳍 / 排除 / 标记最佳; 编辑/添加模式下显示保存/取消。"""
         menu = QMenu(self)
         if self._edit_mode:
             act = menu.addAction("Save changes")
             act.triggered.connect(lambda: self._exit_edit_mode(save=True))
             act = menu.addAction("Cancel")
             act.triggered.connect(lambda: self._exit_edit_mode(save=False))
+        elif self._add_mode:
+            act = menu.addAction("Cancel add")
+            act.triggered.connect(self._cancel_add_mode)
         else:
             path = self._paths[self._index]
             boxes = self._boxes.get(path)
-            if self._box_editor is not None and boxes:
-                act = menu.addAction("Edit boxes")
-                act.triggered.connect(self._enter_edit_mode)
+            if self._box_editor is not None:
+                if boxes:
+                    act = menu.addAction("Edit boxes")
+                    act.triggered.connect(self._enter_edit_mode)
+                act = menu.addAction("Add fin (A)")
+                act.triggered.connect(self._enter_add_mode)
             if self._on_exclude is not None:
                 act = menu.addAction("Exclude (Delete)")
                 act.triggered.connect(

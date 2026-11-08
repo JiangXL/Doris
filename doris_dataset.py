@@ -511,15 +511,24 @@ class Dataset:
         return out
 
     def _similarity_matrix(self):
-        """懒加载并缓存 FIN_SIMILARITY.npy (与 fin_df 行对齐)。"""
+        """懒加载并缓存 FIN_CONNECTION.npy (优先) 或 FIN_SIMILARITY.npy。
+        与 fin_df 行对齐。首次只有 FIN_SIMILARITY 时, 复制为 FIN_CONNECTION。"""
         if getattr(self, "_sim_loaded", False):
             return self._sim
         self._sim_loaded = True
         self._sim = None
+        conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
         sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
-        if os.path.isfile(sim_file):
+        target = conn_file
+        if not os.path.isfile(conn_file):
+            target = sim_file
+            if os.path.isfile(sim_file):
+                # 首次使用: 复制 baseline 作为可编辑的 CONNECTION
+                shutil.copy2(sim_file, conn_file)
+                target = conn_file
+        if os.path.isfile(target):
             try:
-                sim = np.load(sim_file)
+                sim = np.load(target)
                 if sim.shape[0] == len(self.fin_df):
                     self._sim = sim
             except Exception:
@@ -1487,6 +1496,339 @@ class Dataset:
         self.regenerate_fin_crop(path, new_box)
         return self.fin_boxes().get(path, [])
 
+    @staticmethod
+    def _calculate_iou(box1, box2):
+        """计算两个 (x0, y0, x1, y1) 框的 IOU。"""
+        x1_min, y1_min, x1_max, y1_max = box1
+        x2_min, y2_min, x2_max, y2_max = box2
+        inter_x_min = max(x1_min, x2_min)
+        inter_y_min = max(y1_min, y2_min)
+        inter_x_max = min(x1_max, x2_max)
+        inter_y_max = min(y1_max, y2_max)
+        if inter_x_max <= inter_x_min or inter_y_max <= inter_y_min:
+            return 0.0
+        inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+        box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+        box2_area = (x2_max - x2_min) * (y2_max - y2_min)
+        union_area = box1_area + box2_area - inter_area
+        return inter_area / union_area if union_area > 0 else 0.0
+
+    def add_fin_box(self, path, box, clearness=None, crop_conf=None):
+        """在原始照片上手动添加一个鳍框, 插入 FIN_METAINFO.csv 并生成裁剪图。
+
+        box: (x0, y0, x1, y1, cls, extra); cls 为 Aspect (DL/DR/Others)。
+        返回新增行的 index, 失败返回 None。新行的 FinID 初始为 "0" (未分类),
+        DolphinID 为空, TrackIDInShot 为空。
+        """
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
+            return None
+        name = os.path.basename(path)
+        if not os.path.isfile(path):
+            return None
+        x0, y0, x1, y1, cls, _ = box
+        cls = cls.lstrip("_") if isinstance(cls, str) else cls
+        need = ["XMin", "YMin", "XMax", "YMax", "Aspect"]
+        for c in need:
+            if c not in self.fin_df.columns:
+                self.fin_df[c] = pd.NA
+        if "PhotoName" not in self.fin_df.columns:
+            self.fin_df["PhotoName"] = pd.NA
+        if "Path" not in self.fin_df.columns:
+            self.fin_df["Path"] = pd.NA
+        if "identity" not in self.fin_df.columns:
+            self.fin_df["identity"] = range(1, len(self.fin_df) + 1)
+        if "FinID" not in self.fin_df.columns:
+            self.fin_df["FinID"] = "0"
+        if "DolphinID" not in self.fin_df.columns:
+            self.fin_df["DolphinID"] = pd.NA
+        if "TrackIDInShot" not in self.fin_df.columns:
+            self.fin_df["TrackIDInShot"] = pd.NA
+        if "BestInShot" not in self.fin_df.columns:
+            self.fin_df["BestInShot"] = False
+        if "BestInFin" not in self.fin_df.columns:
+            self.fin_df["BestInFin"] = False
+        if "Clear" not in self.fin_df.columns:
+            self.fin_df["Clear"] = pd.NA
+        if "ShotID" not in self.fin_df.columns:
+            self.fin_df["ShotID"] = pd.NA
+
+        shot_id = None
+        if not self.photo_df.empty and "ShotID" in self.photo_df.columns:
+            rows = self.photo_df[self.photo_df["PhotoName"] == name]
+            if not rows.empty:
+                shot_id = rows["ShotID"].iloc[0]
+
+        next_identity = 1
+        if "identity" in self.fin_df.columns and not self.fin_df["identity"].empty:
+            try:
+                next_identity = int(self.fin_df["identity"].max()) + 1
+            except Exception:
+                next_identity = len(self.fin_df) + 1
+
+        try:
+            from PIL import Image
+            img = Image.open(path)
+        except Exception:
+            import cv2
+            img = cv2.imread(path)
+            if img is None:
+                return None
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(img)
+        w, h = img.size
+        x0 = max(0, min(w, int(x0)))
+        y0 = max(0, min(h, int(y0)))
+        x1 = max(x0 + 1, min(w, int(x1)))
+        y1 = max(y0 + 1, min(h, int(y1)))
+        crop = img.crop((x0, y0, x1, y1))
+
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in (".jpg", ".jpeg", ".png"):
+            ext = ".jpg"
+        base_name = "FIN/%s_FIN%02d%s" % (
+            os.path.splitext(name)[0], next_identity, ext)
+        out_abs = os.path.join(self.root, base_name)
+        os.makedirs(os.path.dirname(out_abs), exist_ok=True)
+        crop.save(out_abs)
+
+        if clearness is None:
+            clearness = 0.5
+        if crop_conf is None:
+            crop_conf = 1 
+
+        row = {c: pd.NA for c in self.fin_df.columns if c != "fullpath"}
+        row.update({
+            "PhotoName": name,
+            "Path": base_name,
+            "identity": next_identity,
+            "FinID": "0",
+            "Aspect": cls,
+            "ShotID": shot_id,
+            "XMin": int(x0),
+            "YMin": int(y0),
+            "XMax": int(x1),
+            "YMax": int(y1),
+            "Clearness": float(clearness),
+            "CropConf": float(crop_conf),
+            "BestInShot": False,
+            "BestInFin": False,
+            "Clear": pd.NA,
+            "DolphinID": pd.NA,
+            "TrackIDInShot": pd.NA,
+        })
+        new_row = pd.DataFrame([row], columns=self.fin_df.columns)
+        self.fin_df = pd.concat([self.fin_df, new_row], ignore_index=True)
+        self.fin_df["fullpath"] = self.root + "/" + self.fin_df["Path"]
+        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        return self.fin_df.index[-1]
+
+    def assign_track_ids_by_iou(self, shot_id, iou_threshold=0.5):
+        """对指定 shot 内的所有鳍按帧间 IOU (带 offset 补偿) 分配 TrackIDInShot。
+
+        读取 PHOTO_METAINFO 的 ecc_dx/dy 或 pc_dx/dy 偏移, 将框统一到首帧坐标系,
+        然后在相邻帧之间贪婪匹配同 Aspect 框, IOU>=阈值则归为同一 track。
+        """
+        if self.fin_df.empty or "ShotID" not in self.fin_df.columns \
+                or "TrackIDInShot" not in self.fin_df.columns \
+                or "Aspect" not in self.fin_df.columns:
+            return
+        shot_id_str = str(shot_id)
+        sub = self.fin_df[self.fin_df["ShotID"].astype(str) == shot_id_str].copy()
+        if sub.empty:
+            return
+
+        photo = self.photo_df.copy() if not self.photo_df.empty else pd.DataFrame()
+        if photo.empty or "ShotID" not in photo.columns \
+                or "Datetimesec" not in photo.columns:
+            return
+        photo["ShotID"] = photo["ShotID"].astype(str)
+        shot_photos = photo[photo["ShotID"] == shot_id_str].copy()
+        shot_photos["datetime"] = pd.to_datetime(
+            shot_photos["Datetimesec"], format="%Y:%m:%d %H:%M:%S.%f",
+            errors="coerce")
+        shot_photos = shot_photos.dropna(subset=["datetime"]).sort_values("datetime")
+        if shot_photos.empty:
+            return
+
+        offsets = {}
+        if "ecc_dx" in shot_photos.columns or "pc_dx" in shot_photos.columns:
+            dx = shot_photos["ecc_dx"] if "ecc_dx" in shot_photos.columns \
+                else pd.Series(0.0, index=shot_photos.index)
+            if "pc_dx" in shot_photos.columns:
+                dx = dx.fillna(shot_photos["pc_dx"])
+            dy = shot_photos["ecc_dy"] if "ecc_dy" in shot_photos.columns \
+                else pd.Series(0.0, index=shot_photos.index)
+            if "pc_dy" in shot_photos.columns:
+                dy = dy.fillna(shot_photos["pc_dy"])
+            shot_photos["_dx"] = dx.fillna(0.0)
+            shot_photos["_dy"] = dy.fillna(0.0)
+            cum = shot_photos[["_dx", "_dy"]].cumsum()
+            for name, cx, cy in zip(shot_photos["PhotoName"], cum["_dx"], cum["_dy"]):
+                offsets[name] = (float(cx), float(cy))
+
+        track_of = {}
+        next_track = 1
+        active = []  # [(track_id, box, aspect)]
+        for photo_name in shot_photos["PhotoName"]:
+            rows = sub[sub["PhotoName"] == photo_name]
+            if rows.empty:
+                continue
+            ox, oy = offsets.get(photo_name, (0.0, 0.0))
+            dets = []
+            for idx, row in rows.iterrows():
+                box = (float(row["XMin"]) - ox, float(row["YMin"]) - oy,
+                       float(row["XMax"]) - ox, float(row["YMax"]) - oy)
+                cls = row.get("Aspect")
+                dets.append((idx, box, cls))
+
+            used_dets = set()
+            used_tracks = set()
+            pairs = []
+            for di, (idx_i, box_i, cls_i) in enumerate(dets):
+                best_iou, best_ai = -1.0, None
+                for ai, (tid, box_t, cls_t) in enumerate(active):
+                    if tid in used_tracks:
+                        continue
+                    if cls_i != cls_t:
+                        continue
+                    iou = self._calculate_iou(box_i, box_t)
+                    if iou > best_iou:
+                        best_iou, best_ai = iou, ai
+                if best_ai is not None and best_iou >= iou_threshold:
+                    pairs.append((best_iou, di, best_ai))
+            pairs.sort(reverse=True)
+            for _, di, ai in pairs:
+                if di in used_dets or active[ai][0] in used_tracks:
+                    continue
+                tid = active[ai][0]
+                track_of[dets[di][0]] = tid
+                used_dets.add(di)
+                used_tracks.add(tid)
+
+            for di, det in enumerate(dets):
+                if di in used_dets:
+                    continue
+                tid = next_track
+                next_track += 1
+                track_of[det[0]] = tid
+                used_dets.add(di)
+
+            active = []
+            for di, det in enumerate(dets):
+                idx, box, cls = det
+                tid = track_of[idx]
+                active.append((tid, box, cls))
+
+        if track_of:
+            self.fin_df.loc[list(track_of.keys()), "TrackIDInShot"] = \
+                [track_of[k] for k in track_of.keys()]
+            self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+
+    def extract_feature(self, crop_path):
+        """对单个裁剪鳍图提取深度特征向量 (numpy 1-D array)。"""
+        if not os.path.isfile(crop_path):
+            return None
+        if getattr(self, "_feat_extractor", None) is None:
+            from Step3_extract_fin_feature import FinFeatureExtractorGeneral
+            self._feat_extractor = FinFeatureExtractorGeneral()
+        extractor = self._feat_extractor
+        from PIL import Image
+        img = Image.open(crop_path).convert("RGB")
+        import torch
+        tensor = extractor.transform(img).unsqueeze(0)
+        with torch.no_grad():
+            feat = extractor.model(tensor.to(extractor.device)).cpu().numpy()
+        return feat.reshape(-1)
+
+    def _expand_similarity_for_new_fin(self, new_feature):
+        """新增一个鳍后, 同步扩展 FIN_DEEPFEATURES / FIN_SIMILARITY / FIN_CONNECTION。
+
+        调用前必须保证 FIN_METAINFO.csv 已经包含新行 (最后一行),
+        FIN_DEEPFEATURES.npy 尚未扩展。
+        """
+        if new_feature is None:
+            return
+        feat_file = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.npy")
+        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
+        conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
+        if not os.path.isfile(feat_file) or not os.path.isfile(sim_file):
+            return
+
+        old_features = np.load(feat_file)
+        old_sim = np.load(sim_file)
+        old_conn = np.load(conn_file) if os.path.isfile(conn_file) else old_sim.copy()
+        N = len(old_features)
+        f_new = np.asarray(new_feature).reshape(1, -1)
+
+        # 计算新鳍与所有旧鳍的余弦相似度
+        norms_old = np.linalg.norm(old_features, axis=1, keepdims=True)
+        norms_old[norms_old == 0] = 1.0
+        norm_new = float(np.linalg.norm(f_new))
+        if norm_new == 0:
+            norm_new = 1.0
+        cross = np.dot(f_new / norm_new, (old_features / norms_old).T).reshape(-1)
+
+        M = N + 1
+        new_sim = np.eye(M, dtype=float)
+        if old_sim.shape == (N, N):
+            new_sim[:N, :N] = old_sim
+        new_sim[N, :N] = cross
+        new_sim[:N, N] = cross
+
+        new_conn = np.eye(M, dtype=float)
+        if old_conn.shape == (N, N):
+            new_conn[:N, :N] = old_conn
+        new_conn[N, :N] = cross
+        new_conn[:N, N] = cross
+
+        # same-photo 置 0 (新鳍与同一原图的其它鳍)
+        new_name = str(self.fin_df["PhotoName"].iloc[-1])
+        same_photo_mask = self.fin_df["PhotoName"].to_numpy() == new_name
+        same_photo_idx = np.flatnonzero(same_photo_mask)
+        if len(same_photo_idx) > 1:
+            new_sim[N, same_photo_idx[:-1]] = 0.0
+            new_sim[same_photo_idx[:-1], N] = 0.0
+            new_conn[N, same_photo_idx[:-1]] = 0.0
+            new_conn[same_photo_idx[:-1], N] = 0.0
+
+        # CONNECTION: same-track 置 1
+        if "TrackIDInShot" in self.fin_df.columns:
+            new_track = self.fin_df["TrackIDInShot"].iloc[-1]
+            new_shot = str(self.fin_df["ShotID"].iloc[-1])
+            if not pd.isna(new_track):
+                mask = ((self.fin_df["ShotID"].astype(str) == new_shot) &
+                        (self.fin_df["TrackIDInShot"] == new_track)).to_numpy().copy()
+                mask[-1] = False
+                idx = np.flatnonzero(mask)
+                if len(idx):
+                    new_conn[N, idx] = 1.0
+                    new_conn[idx, N] = 1.0
+
+        # 备份并保存
+        bdir = os.path.join(self.meta_dir, "backup")
+        os.makedirs(bdir, exist_ok=True)
+        for fp in (sim_file, conn_file, feat_file):
+            if os.path.isfile(fp):
+                shutil.copy2(fp, os.path.join(
+                    bdir, os.path.basename(fp) + "." +
+                    datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
+
+        new_features = np.vstack([old_features, f_new])
+        np.save(feat_file, new_features)
+        np.save(sim_file, new_sim)
+        np.save(conn_file, new_conn)
+
+        # 更新 FIN_DEEPFEATURES.csv
+        csv_path = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.csv")
+        new_row = self.fin_df.iloc[[-1]][["PhotoName", "Path"]]
+        if os.path.isfile(csv_path):
+            new_row.to_csv(csv_path, mode="a", header=False, index=False)
+        else:
+            new_row.to_csv(csv_path, index=False)
+
+        self._sim = new_conn
+        self._invalidate_cache()
+
     # ------------------------------------------------------------------
     # 拖拽改组: 只更新 dataframe 并写回 CSV, 不移动/重命名任何文件
     # ------------------------------------------------------------------
@@ -1707,11 +2049,35 @@ class Dataset:
             return {}
         return self._assign_fin_id_to_mask(mask, fid, sync_dolphin=True)
 
+    def move_to_new_fin_id(self, paths):
+        """把选中的鳍图分配到一个全新的 FinID (FinNNN), 并从原 DolphinID 中移出。
+
+        用于 Fin ID 页 Review 模式侧边栏空白区域拖放: 被拖鳍图可能来自一个或多个
+        现有 FinID, 它们会被统一归入新 FinID, 原有 DolphinID 清空。
+        返回 {old_path: old_path} 映射, 供界面从旧组中移除。
+        """
+        df = self.fin_df
+        if df.empty or "FinID" not in df.columns:
+            return {}
+        mask = df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        keys = df["FinID"].map(self._fid_key)
+        nums = [int(m.group(1)) for k in keys if k != "0"
+                for m in [re.match(r"^Fin(\d+)$", k)] if m]
+        new_fid = "Fin%03d" % (max(nums) + 1 if nums else 1)
+        df.loc[mask, "FinID"] = new_fid
+        if "DolphinID" in df.columns:
+            df.loc[mask, "DolphinID"] = pd.NA
+        self._save_csv(df, "FIN_METAINFO.csv")
+        moved_paths = df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
+
     # ------------------------------------------------------------------
-    # 三栏模式排除区: 相似度置 0 并持久化到 FIN_SIMILARITY.npy
+    # 三栏模式排除区: 相似度置 0 并持久化到 FIN_CONNECTION.npy
     # ------------------------------------------------------------------
     def _zero_sim_between(self, ids_a, ids_b):
-        """把两组 FinID 之间的两两相似度置 0, 写回 FIN_SIMILARITY.npy。
+        """把两组 FinID 之间的两两相似度置 0, 写回 FIN_CONNECTION.npy。
         ids_a/ids_b 为 FinNNN 字符串集合 (或列表); 未分类 "0" 会被忽略。
         """
         sim = self._similarity_matrix()
@@ -1726,14 +2092,14 @@ class Dataset:
             return
         sim[np.ix_(ia, ib)] = 0
         sim[np.ix_(ib, ia)] = 0
-        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
-        if os.path.isfile(sim_file):
+        conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
+        if os.path.isfile(conn_file):
             bdir = os.path.join(self.meta_dir, "backup")
             os.makedirs(bdir, exist_ok=True)
-            shutil.copy2(sim_file, os.path.join(
-                bdir, "FIN_SIMILARITY.npy." +
+            shutil.copy2(conn_file, os.path.join(
+                bdir, "FIN_CONNECTION.npy." +
                 datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
-            np.save(sim_file, sim)
+            np.save(conn_file, sim)
         self._invalidate_cache()
 
     def exclude_to_new_fin_id(self, paths, cur_group, use_track=True):

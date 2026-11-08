@@ -3,6 +3,8 @@
 
 import os
 
+import pandas as pd
+
 from PyQt5.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QMessageBox, QVBoxLayout, QHBoxLayout,
     QPushButton, QToolButton, QMenu, QStackedWidget,QListWidgetItem
@@ -142,6 +144,8 @@ class MainWindow(QMainWindow):
                 if title == "Fin ID" else None,
                 merger=ds.merge_fin_paths if title == "Fin ID" else None,
                 similar_mover=ds.move_to_fin_id
+                if title == "Fin ID" else None,
+                empty_drop_handler=ds.move_to_new_fin_id
                 if title == "Fin ID" else None)
             groups = fn()
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
@@ -396,22 +400,40 @@ class MainWindow(QMainWindow):
                 self.ds.timeline_data())
 
     def _edit_box(self, path, action, index, new_box=None):
-        """全图查看器的鳍框编辑回调: 更新 CSV 与裁剪图, 并刷新相关 tab 缩略图。"""
-        old_boxes = self.ds.fin_boxes().get(path, [])
-        if index >= len(old_boxes):
+        """全图查看器的鳍框编辑回调: 更新/添加鳍框, 并刷新相关 tab 缩略图。"""
+        if action == "update":
+            old_boxes = self.ds.fin_boxes().get(path, [])
+            if index is None or index >= len(old_boxes):
+                return None
+            old_box = old_boxes[index]
+            if new_box is not None:
+                self.ds.edit_fin_box(path, old_box, new_box)
+                self._refresh_fin_boxes_on_tabs(path)
+                return self.ds.fin_boxes().get(path, [])
             return None
-        old_box = old_boxes[index]
-        if action == "update" and new_box is not None:
-            self.ds.edit_fin_box(path, old_box, new_box)
-            fin_tabs = {"Fin Aspect", "Blur", "Fin ID", "Continuous Shots"}
-            for title, tab, fn in self._group_tabs:
-                if title in fin_tabs or title == "Social Structure":
-                    dolphin_id = (title == "Social Structure")
-                    tab._boxes[path] = self.ds.fin_boxes(
-                        dolphin_id=dolphin_id).get(path, [])
-                    tab.grid.refresh_path(path)
+        if action == "add" and new_box is not None:
+            new_idx = self.ds.add_fin_box(path, new_box)
+            if new_idx is None:
+                return None
+            shot_id = self.ds.fin_df.at[new_idx, "ShotID"]
+            if not pd.isna(shot_id):
+                self.ds.assign_track_ids_by_iou(shot_id)
+            full = self.ds.fin_df.at[new_idx, "fullpath"]
+            feat = self.ds.extract_feature(full)
+            self.ds._expand_similarity_for_new_fin(feat)
+            self._refresh_tabs()
             return self.ds.fin_boxes().get(path, [])
         return None
+
+    def _refresh_fin_boxes_on_tabs(self, path):
+        """更新所有依赖 fin_boxes 的 tab 上的框。"""
+        fin_tabs = {"Fin Aspect", "Blur", "Fin ID", "Continuous Shots"}
+        for title, tab, fn in self._group_tabs:
+            if title in fin_tabs or title == "Social Structure":
+                dolphin_id = (title == "Social Structure")
+                tab._boxes[path] = self.ds.fin_boxes(
+                    dolphin_id=dolphin_id).get(path, [])
+                tab.grid.refresh_path(path)
 
     def _rebuild_group_tab(self, tab, title, fn):
         """重建一个分组页 (Continuous Shots / Fin Aspect / Blur / Fin ID / Social Structure)。"""

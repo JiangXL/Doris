@@ -46,15 +46,21 @@ def _wrap_text(s, width=34):
 
 
 class GroupListWidget(QListWidget):
-    """侧边分组列表, 接受从网格拖来的图片路径。"""
+    """侧边分组列表, 接受从网格拖来的图片路径。
+    拖到空白区域时可选触发 empty_area_dropped, 用于新建分组。"""
 
     paths_dropped = pyqtSignal(list, str)  # ([path, ...], 目标组名)
+    empty_area_dropped = pyqtSignal(list)   # ([path, ...])
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
         self.setDragDropMode(QListWidget.DropOnly)
         self._hover_item = None  # 拖拽悬停高亮的分组项
+        self._accept_empty = False
+
+    def set_accept_empty_drop(self, enabled):
+        self._accept_empty = enabled
 
     def _set_hover(self, item):
         if self._hover_item is item:
@@ -87,15 +93,24 @@ class GroupListWidget(QListWidget):
     def dropEvent(self, event):
         item = self.itemAt(event.pos())
         self._set_hover(None)
-        if item is None or not event.mimeData().hasFormat(MIME_PATHS):
+        if not event.mimeData().hasFormat(MIME_PATHS):
             event.ignore()
             return
         paths = bytes(event.mimeData().data(MIME_PATHS)).decode("utf-8").splitlines()
         paths = [p for p in paths if p]
-        if paths:
+        if not paths:
+            event.ignore()
+            return
+        if item is not None:
             self.paths_dropped.emit(paths, item.data(Qt.UserRole))
             event.setDropAction(Qt.MoveAction)
             event.accept()
+        elif self._accept_empty:
+            self.empty_area_dropped.emit(paths)
+            event.setDropAction(Qt.MoveAction)
+            event.accept()
+        else:
+            event.ignore()
 
 
 class GroupedTab(QWidget):
@@ -106,7 +121,8 @@ class GroupedTab(QWidget):
                  best_marker=None, best_in_fin_provider=None, renamer=None,
                  track_move_checkbox=False, shot_type_setter=None,
                  shot_info_provider=None, box_editor=None,
-                 photo_type_setter=None, similar_mover=None, parent=None):
+                 photo_type_setter=None, similar_mover=None,
+                 empty_drop_handler=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -147,6 +163,7 @@ class GroupedTab(QWidget):
         self._exclude = exclude
         self._renamer = renamer
         self._on_moved = on_moved
+        self._empty_drop_handler = empty_drop_handler
         self._full_resolver = full_resolver
         self._full_boxes = full_boxes or {}
         self._labels = labels or {}
@@ -272,6 +289,9 @@ class GroupedTab(QWidget):
         self._boxes = {}
         self.group_list.currentTextChanged.connect(self._on_group)
         self.group_list.paths_dropped.connect(self._on_drop)
+        if self._empty_drop_handler is not None:
+            self.group_list.set_accept_empty_drop(True)
+            self.group_list.empty_area_dropped.connect(self._on_empty_drop)
         # 无 mover 的页不接受拖放
         self.group_list.setAcceptDrops(mover is not None)
         self.grid.setDragEnabled(mover is not None)
@@ -446,6 +466,9 @@ class GroupedTab(QWidget):
             self._clear_cb.setEnabled(mode == "review")  # 筛选只在 Review 模式生效
         if self._track_move_cb is not None:
             self._track_move_cb.setEnabled(mode == "review")
+        if self._empty_drop_handler is not None:
+            # 只在 Review 模式允许拖到空白区域新建 FinID
+            self.group_list.set_accept_empty_drop(mode == "review")
         self.group_list.setVisible(not self._overview)
         if self._best_only and self._similar_provider is not None:
             self._enter_tri_mode()
@@ -800,6 +823,29 @@ class GroupedTab(QWidget):
             self._shot_type_setter(shot_id, text)
         except Exception as e:
             QMessageBox.warning(self, "保存失败", str(e))
+
+    def _on_empty_drop(self, paths):
+        """Review 模式下把鳍图拖到侧边栏空白区域: 新建一个 FinID。"""
+        if self._empty_drop_handler is None:
+            return
+        if self._overview or self._best_only:
+            return
+        try:
+            moved = self._empty_drop_handler(paths) or {}
+        except Exception as e:
+            QMessageBox.warning(self, "新建 FinID 失败", str(e))
+            return
+        if not moved:
+            return
+        if self._on_moved is not None:
+            self._on_moved(self)  # 重建 tab, 新的 FinID 会出现在列表中
+        else:
+            for old, new in moved.items():
+                for g in self._groups.values():
+                    if old in g:
+                        g.remove(old)
+            self.set_groups(self._groups, self._tooltips, keep_current=True,
+                            boxes=self._boxes)
 
     def _on_drop(self, paths, target_name, use_track=None, mover=None):
         """use_track=None 时：优先看 "Move whole track" 复选框（Review 模式）;
@@ -1280,7 +1326,7 @@ class StepRunner(QThread):
 # Dashboard 页
 # ---------------------------------------------------------------------------
 class DashboardTab(QWidget):
-    """Dashboard 页: 处理流程入口 (布局参考 dashboard.ui)。
+    """Dashboard 页: 处理流程入口 
 
     按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
     其余按钮运行对应流水线脚本 (扫描 / 切鳍 / 提特征 / 聚类 /
