@@ -96,15 +96,14 @@ class DatabaseExporter:
             all_orig = set(fin["PhotoName"].dropna())
             # 无鳍的原图 
             low |= all_photos - all_orig
-            # 有鳍但没有 DolphinID & Clear==True 的照片
+            # 有鳍但没有 DolphinID 的照片
             if "DolphinID" in fin.columns:
                 with_dph = fin.dropna(subset=["DolphinID"])
-                with_dph_and_clear = with_dph.query('Clear == True')
-                # need to confirm
-                with_dph_and_clear = set(with_dph_and_clear["PhotoName"].dropna())
+                #with_dph_and_clear = with_dph.query('Clear == True')
+                with_dph = set(with_dph["PhotoName"].dropna())
             else:
                 with_dph = set()
-            low |= all_orig - with_dph_and_clear
+            low |= all_orig - with_dph
         for name in sorted(low):
             self._copy_orig(name, folder)
         print("Export Low Quality Photos, done")

@@ -115,13 +115,13 @@ class GroupListWidget(QListWidget):
 
 class GroupedTab(QWidget):
     def __init__(self, mover=None, full_resolver=None, full_boxes=None,
-                 labels=None, alt_move=False, on_moved=None, best_mark=None,
-                 similar_provider=None, track_mover=None, exclude=None,
-                 overview_provider=None, merger=None, clear_mark=None,
-                 best_marker=None, best_in_fin_provider=None, renamer=None,
-                 track_move_checkbox=False, shot_type_setter=None,
-                 shot_info_provider=None, box_editor=None,
-                 photo_type_setter=None, similar_mover=None,
+                 labels=None, orig_labels=None, alt_move=False, on_moved=None,
+                 best_mark=None, similar_provider=None, track_mover=None,
+                 exclude=None, overview_provider=None, merger=None,
+                 clear_mark=None, best_marker=None, best_in_fin_provider=None,
+                 renamer=None, track_move_checkbox=False,
+                 shot_type_setter=None, shot_info_provider=None,
+                 box_editor=None, photo_type_setter=None, similar_mover=None,
                  empty_drop_handler=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
@@ -167,6 +167,7 @@ class GroupedTab(QWidget):
         self._full_resolver = full_resolver
         self._full_boxes = full_boxes or {}
         self._labels = labels or {}
+        self._orig_labels = orig_labels or {}
         self._alt_move = alt_move and mover is not None
         self._best_mark = best_mark
         self._best_only = False
@@ -401,6 +402,7 @@ class GroupedTab(QWidget):
 
         dlg = ImageViewerDialog(origs, origs.index(orig), self,
                                 boxes=self._full_boxes,
+                                labels=self._orig_labels,
                                 box_editor=_edit_for_middle,
                                 on_misc=_misc_for_middle
                                 if self._photo_type_setter is not None

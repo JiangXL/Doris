@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         fin_tabs = {"Fin Aspect", "Blur", "Fin ID"}  # 鳍图页: 中键查看原图, 叠加 shot_id
         alt_tabs = {"Fin Aspect", "Blur"}            # 支持 Alt+N 移入第 N 组
         shot_labels = ds.fin_shot_labels()  # 鳍图路径 -> shot_id 叠加文字
+        photo_labels = ds.photo_shot_labels()  # 原图路径 -> shot_id 叠加文字
         best_marks = ds.fin_best_marks()    # Fin ID 页 "每 shot 最佳" 筛选
         clear_marks = ds.fin_clear_marks()  # Fin ID / Dolphin 页 "Clear" 筛选
         for title, fn, mover in [
@@ -123,7 +124,11 @@ class MainWindow(QMainWindow):
                 mover=mover,
                 full_resolver=ds.orig_of_fin if title in fin_tabs else None,
                 full_boxes=shot_boxes if title in fin_tabs else None,
-                labels=shot_labels if title in fin_tabs else None,
+                labels=(photo_labels if title == "Continuous Shots"
+                        else (shot_labels if title in fin_tabs else None)),
+                orig_labels=photo_labels if (title in fin_tabs
+                                             or title == "Continuous Shots")
+                else None,
                 alt_move=title in alt_tabs,
                 on_moved=self._refresh_tabs,
                 best_mark=best_marks.__contains__ if title == "Fin ID" else None,
@@ -227,6 +232,7 @@ class MainWindow(QMainWindow):
         self._dolphin_review_tab = GroupedTab(
             mover=None, full_resolver=ds.orig_of_fin,
             labels=ds.dolphin_fin_labels(),
+            orig_labels=photo_labels,
             clear_mark=ds.fin_clear_marks().__contains__,
             best_marker=ds.mark_best_fins,
             best_in_fin_provider=ds.fin_best_in_fin_marks,
@@ -253,7 +259,8 @@ class MainWindow(QMainWindow):
         #    仿 Continuous Shots 页在原图上画鳍框, 标注 FinID 和 DolphinID
         #    (须排在 Dolphin 页后, ds.dolphins() 已分配 DolphinID 列)
         tab_social = GroupedTab(mover=None, on_moved=self._refresh_tabs,
-                                box_editor=self._edit_box)
+                                box_editor=self._edit_box,
+                                labels=photo_labels)
         groups = ds.social()
         if groups:
             tab_social.set_groups(groups, ds.social_tooltips,
@@ -505,7 +512,8 @@ class MainWindow(QMainWindow):
             return
         paths = self.ds.low_quality_photos()
         self._low_quality_grid.show_images(
-            paths, boxes=self.ds.fin_boxes(), labels=self.ds.fin_shot_labels())
+            paths, boxes=self.ds.fin_boxes(),
+            labels=self.ds.photo_shot_labels())
         if self._low_quality_tab is not None:
             self._low_quality_tab._needs_refresh = False
 

@@ -208,6 +208,35 @@ class Dataset:
         self._cache[key] = labels
         return labels
 
+    def photo_shot_labels(self):
+        """原图路径 -> 'shot_<id>' 叠加标签。
+
+        用于原图缩略图/大图查看 (Continuous Shots / Social Structure / Low Quality
+        等页), 标签只来自 PHOTO_METAINFO.csv 的 ShotID 列。
+        同时按绝对路径和文件名两种键收录, 以覆盖不同来源的路径形式。
+        """
+        key = "photo_shot_labels"
+        if key in self._cache:
+            return self._cache[key]
+        labels = {}
+        if self.photo_df.empty or "PhotoName" not in self.photo_df.columns \
+                or "ShotID" not in self.photo_df.columns:
+            self._cache[key] = labels
+            return labels
+        for name, sid in zip(self.photo_df["PhotoName"], self.photo_df["ShotID"]):
+            if pd.isna(sid) or not isinstance(name, str):
+                continue
+            try:
+                sid = int(float(sid))
+            except (ValueError, TypeError):
+                pass
+            text = "shot_%s" % sid
+            p = os.path.join(self.root, name)
+            labels[p] = text
+            labels[name] = text
+        self._cache[key] = labels
+        return labels
+
     def fin_best_marks(self):
         """BestInShot=True 的鳍图路径集合 (FIN_METAINFO.csv 的现成标记)。"""
         key = "fin_best_marks"
@@ -1011,19 +1040,13 @@ class Dataset:
             all_orig = set(self.fin_df["PhotoName"].dropna().astype(str))
             # 没有任何鳍框
             low |= all_photos - all_orig
-            # 有鳍但无 DolphinID 或没有 Clear==True 的鳍
+            # 有鳍但无 DolphinID 的鳍
             if "DolphinID" in self.fin_df.columns:
                 with_dph = self.fin_df.dropna(subset=["DolphinID"])
-                if "Clear" in with_dph.columns:
-                    clear_mask = with_dph["Clear"].astype(str).str.lower() \
-                        .isin(("true", "1"))
-                    with_dph_and_clear = set(
-                        with_dph.loc[clear_mask, "PhotoName"].dropna().astype(str))
-                else:
-                    with_dph_and_clear = set()
+                with_dph= set(with_dph["PhotoName"].dropna().astype(str))
             else:
-                with_dph_and_clear = set()
-            low |= all_orig - with_dph_and_clear
+                with_dph = set()
+            low |= all_orig - with_dph
         else:
             low = all_photos
         out = []
