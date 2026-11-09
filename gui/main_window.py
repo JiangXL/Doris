@@ -7,7 +7,8 @@ import pandas as pd
 
 from PyQt5.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QMessageBox, QVBoxLayout, QHBoxLayout,
-    QPushButton, QToolButton, QMenu, QStackedWidget,QListWidgetItem
+    QPushButton, QToolButton, QMenu, QStackedWidget, QListWidgetItem,
+    QInputDialog,
 )
 from PyQt5.QtCore import Qt
 
@@ -155,6 +156,8 @@ class MainWindow(QMainWindow):
                 similar_mover=ds.move_to_fin_id
                 if title == "Fin ID" else None,
                 empty_drop_handler=ds.move_to_new_fin_id
+                if title == "Fin ID" else None,
+                dolphin_assigner=self._assign_dolphin_to_fin_id
                 if title == "Fin ID" else None)
             groups = fn()
             if title == "Fin ID":  # 只显示图片数大于 1 的个体
@@ -385,6 +388,28 @@ class MainWindow(QMainWindow):
                 self.ds.rename_dolphin_ids()
         except Exception as e:
             QMessageBox.warning(self, "重命名失败", str(e))
+            return
+        self._refresh_tabs()
+
+    def _assign_dolphin_to_fin_id(self, fin_id):
+        """Fin ID 页 Review 模式右键菜单: 为指定 FinID 分配 DolphinID。
+
+        弹出对话框列出已有 DolphinID 和 "<New Dolphin>" 选项;
+        选择后写回 FIN_METAINFO.csv 并刷新所有 tab。
+        """
+        existing = sorted({str(d) for d in self.ds.dolphin_groups().keys()})
+        items = existing + ["<New Dolphin>"]
+        dph, ok = QInputDialog.getItem(
+            self, "Assign DolphinID",
+            "Assign DolphinID to %s:" % fin_id, items, 0, False)
+        if not ok:
+            return
+        try:
+            if dph == "<New Dolphin>":
+                dph = self.ds.new_dolphin()
+            self.ds.assign_dolphin_to_fin_id(fin_id, dph)
+        except Exception as e:
+            QMessageBox.warning(self, "Assign DolphinID failed", str(e))
             return
         self._refresh_tabs()
 

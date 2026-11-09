@@ -913,7 +913,6 @@ class ImageViewerDialog(QDialog):
         self._index = index
         path = self._paths[index]
         reader = QImageReader(path)
-        #reader.setAutoTransform(True)  # 按 EXIF 方向旋转
         pm = QPixmap.fromImage(reader.read())
         boxes = self._boxes.get(path)
         if boxes and not pm.isNull():

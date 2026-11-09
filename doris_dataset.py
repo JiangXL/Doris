@@ -26,9 +26,10 @@ class Dataset:
     def __init__(self, root):
         self.root = root
         self.meta_dir = os.path.join(self.root, "METAINFO")
-        self.photo_df = self._load_meta("PHOTO_METAINFO.csv").sort_values(by="PhotoName") 
-        self.fin_df = self._load_meta("FIN_METAINFO.csv").sort_values(by="identity") 
+        self.photo_df = self._load_meta("PHOTO_METAINFO.csv")
+        self.fin_df = self._load_meta("FIN_METAINFO.csv")
         if not self.fin_df.empty:
+            self.fin_df = self.fin_df.sort_values(by="identity") 
             self.fin_df["fullpath"] = self.root + "/" + self.fin_df["Path"]
             if "Clear" not in self.fin_df.columns:
                 # True=Clear, False=Blur, 空=Mid(未判定)
@@ -36,6 +37,8 @@ class Dataset:
             if "FinID" in self.fin_df.columns:
                 self.fin_df["FinID"] = self.fin_df["FinID"].map(
                     self._fid_key)
+        if not self.photo_df.empty:
+            self.photo_df = self.photo_df.sort_values(by="PhotoName") 
         self._cache = {}
 
     def _invalidate_cache(self, keys=None):
@@ -1229,7 +1232,7 @@ class Dataset:
             sub = df.dropna(subset=["DolphinID", "fullpath"])
             for name, g in sub.groupby("DolphinID", sort=True):
                 sorted_g = g.sort_values(by="Aspect")
-                groups[str(name)] = [p for p in g["fullpath"]
+                groups[str(name)] = [p for p in sorted_g["fullpath"]
                                      if isinstance(p, str)]
         # 补上空海豚 (无鳍图)
         for name in self._extra_dolphins():
@@ -1386,6 +1389,24 @@ class Dataset:
             self._save_mismatch(pairs)
         df.loc[mask, "DolphinID"] = pd.NA
         self._save_csv(df, "FIN_METAINFO.csv")
+
+    def assign_dolphin_to_fin_id(self, fid, dph_id):
+        """把指定 FinID 的所有鳍行划入某个 DolphinID, 写回 CSV。
+
+        与 assign_dolphin_fin 不同: 不区分 Aspect, 整个 FinID 归属同一只海豚。
+        返回被修改的行数。
+        """
+        df = self.fin_df
+        if df.empty or "FinID" not in df.columns \
+                or "DolphinID" not in df.columns:
+            return 0
+        fidk = self._fid_key(fid)
+        mask = df["FinID"].map(self._fid_key) == fidk
+        if not mask.any():
+            return 0
+        df.loc[mask, "DolphinID"] = str(dph_id)
+        self._save_csv(df, "FIN_METAINFO.csv")
+        return int(mask.sum())
 
     def dolphin_candidates(self, fid, cls, threshold=0.3, limit=30):
         """与 (fid, cls) 鳍最相似的异侧候选鳍 (Match Mode 候选栏)。

@@ -51,6 +51,7 @@ class GroupListWidget(QListWidget):
 
     paths_dropped = pyqtSignal(list, str)  # ([path, ...], 目标组名)
     empty_area_dropped = pyqtSignal(list)   # ([path, ...])
+    right_clicked = pyqtSignal(QPoint)      # 右键点击位置 (全局坐标)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -61,6 +62,14 @@ class GroupListWidget(QListWidget):
 
     def set_accept_empty_drop(self, enabled):
         self._accept_empty = enabled
+
+    def contextMenuEvent(self, event):
+        """右键点击列表项时发出信号; 点击空白处忽略。"""
+        if self.itemAt(event.pos()) is not None:
+            self.right_clicked.emit(event.globalPos())
+            event.accept()
+        else:
+            super().contextMenuEvent(event)
 
     def _set_hover(self, item):
         if self._hover_item is item:
@@ -122,7 +131,7 @@ class GroupedTab(QWidget):
                  renamer=None, track_move_checkbox=False,
                  shot_type_setter=None, shot_info_provider=None,
                  box_editor=None, photo_type_setter=None, similar_mover=None,
-                 empty_drop_handler=None, parent=None):
+                 empty_drop_handler=None, dolphin_assigner=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -164,6 +173,7 @@ class GroupedTab(QWidget):
         self._renamer = renamer
         self._on_moved = on_moved
         self._empty_drop_handler = empty_drop_handler
+        self._dolphin_assigner = dolphin_assigner
         self._full_resolver = full_resolver
         self._full_boxes = full_boxes or {}
         self._labels = labels or {}
@@ -293,6 +303,8 @@ class GroupedTab(QWidget):
         if self._empty_drop_handler is not None:
             self.group_list.set_accept_empty_drop(True)
             self.group_list.empty_area_dropped.connect(self._on_empty_drop)
+        if self._dolphin_assigner is not None:
+            self.group_list.right_clicked.connect(self._on_group_menu)
         # 无 mover 的页不接受拖放
         self.group_list.setAcceptDrops(mover is not None)
         self.grid.setDragEnabled(mover is not None)
@@ -725,6 +737,33 @@ class GroupedTab(QWidget):
             return
         if changed and self._on_moved is not None:
             self._on_moved(self)
+
+    def _on_group_menu(self, pos):
+        """Review 模式下右键侧边 FinID 列表: 弹出分配 DolphinID 菜单。"""
+        if self._dolphin_assigner is None or self._overview or self._best_only:
+            return
+        item = self.group_list.itemAt(self.group_list.mapFromGlobal(pos))
+        if item is None:
+            return
+        fin_id = item.data(Qt.UserRole)
+        menu = QMenu(self)
+        act = menu.addAction("Assign DolphinID")
+        act.triggered.connect(lambda: self._assign_dolphin_to_fin_id(fin_id))
+        menu.exec_(pos)
+
+    def _assign_dolphin_to_fin_id(self, fin_id):
+        """调用外部 dolphin_assigner 并刷新界面。"""
+        if self._dolphin_assigner is None:
+            return
+        try:
+            self._dolphin_assigner(fin_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Assign DolphinID failed", str(e))
+            return
+        if self._on_moved is not None:
+            self._on_moved(self)
+        else:
+            self._on_group(None)
 
     def _rename_fin_ids(self):
         """顶栏 Rename ID 按钮: 重新编号所有 FinID 并刷新界面。"""
