@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 """通用分组页、统计页与 Dashboard 页。"""
 
-import io
+import contextlib
 import os
-import re
-import runpy
 import sys
-import shutil
-import threading
-import hashlib
 from datetime import datetime
 
 import pandas as pd
@@ -23,7 +18,7 @@ from PyQt5.QtWidgets import (
     QGridLayout, QPlainTextEdit,
 )
 from PyQt5.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer, QProcess
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
 
 from doris_dataset import Dataset
 from .common import (
@@ -31,6 +26,10 @@ from .common import (
     ZoomableView, ImageViewerDialog,
 )
 from .dolphin import DolphinTab, MatchPanel
+from .steps import (
+    _scan_photos, _locate_fin, _extract_features,
+    _filter_quality, _cluster, _export_database, _export_pptx,
+)
 
 def _wrap_text(s, width=34):
     """手动按宽度断行(优先在逗号/空格后断开), 避免依赖视图换行设置。"""
@@ -1302,29 +1301,26 @@ class StatisticsTab(QWidget):
         self._timeline(self.fig_timeline, timeline_data)
 
 
-class StepRunner(QThread):
-    """在 PyInstaller 打包环境中以同进程方式运行流水线脚本。
+class ClassStepRunner(QThread):
+    """在后台线程中执行一个可调用对象，并把 stdout/stderr 重定向到 GUI 日志。
 
-    冻结后没有独立的 Python 解释器，无法通过 QProcess 执行 ``python script.py``。
-    该线程用 ``runpy.run_path`` 执行脚本，并通过信号把 stdout/stderr 传回主线程。
+    取代原先的 QProcess + runpy 方案；开发模式与 PyInstaller 打包后均走同进程
+    线程，直接实例化 Step*.py 中的类并调用入口方法。
     """
 
     log_text = pyqtSignal(str, object)
     finished_with_code = pyqtSignal(int)
-    _lock = None
 
-    def __init__(self, path, args, parent=None):
+    def __init__(self, fn, parent=None):
         super().__init__(parent)
-        self.path = path
-        self.args = args
-        if StepRunner._lock is None:
-            StepRunner._lock = threading.Lock()
+        self.fn = fn
 
-    def run(self):
-        class EmitStream(io.StringIO):
-            def __init__(self, signal, color=None):
-                super().__init__()
-                self.signal = signal
+    @staticmethod
+    @contextlib.contextmanager
+    def _capture_streams(emit):
+        class _EmitStream:
+            def __init__(self, emit, color=None):
+                self.emit = emit
                 self.color = color
                 self._buffer = ""
 
@@ -1334,32 +1330,33 @@ class StepRunner(QThread):
                 self._buffer += s
                 while "\n" in self._buffer:
                     line, self._buffer = self._buffer.split("\n", 1)
-                    self.signal.emit(line, self.color)
+                    self.emit(line, self.color)
 
             def flush(self):
                 if self._buffer:
-                    self.signal.emit(self._buffer, self.color)
+                    self.emit(self._buffer, self.color)
                     self._buffer = ""
 
-        with StepRunner._lock:
-            old_argv = sys.argv
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            exit_code = 0
-            try:
-                sys.argv = [self.path] + self.args
-                sys.stdout = EmitStream(self.log_text)
-                sys.stderr = EmitStream(self.log_text, "#ff6b6b")
-                runpy.run_path(self.path, run_name="__main__")
-            except SystemExit as e:
-                exit_code = e.code if isinstance(e.code, int) else 0
-            except Exception as e:
-                self.log_text.emit(str(e), "#ff6b6b")
-                exit_code = 1
-            finally:
-                sys.argv = old_argv
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = _EmitStream(emit)
+        sys.stderr = _EmitStream(emit, "#ff6b6b")
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    def run(self):
+        exit_code = 0
+        try:
+            with self._capture_streams(self.log_text.emit):
+                self.fn()
+        except SystemExit as e:
+            exit_code = e.code if isinstance(e.code, int) else 0
+        except Exception as e:
+            self.log_text.emit(str(e), "#ff6b6b")
+            exit_code = 1
         self.finished_with_code.emit(exit_code)
 
 
@@ -1367,12 +1364,12 @@ class StepRunner(QThread):
 # Dashboard 页
 # ---------------------------------------------------------------------------
 class DashboardTab(QWidget):
-    """Dashboard 页: 处理流程入口 
+    """Dashboard 页: 处理流程入口
 
     按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
-    其余按钮运行对应流水线脚本 (扫描 / 切鳍 / 提特征 / 聚类 /
-    导出数据库 / 导出 Dolphin Overview PPT): 开发模式下用子进程,
-    PyInstaller 打包后用同进程线程, 运行期间按钮禁用, 结束后恢复并提示。"""
+    其余按钮直接实例化 Step*.py 中的类并调用入口方法 (扫描 / 切鳍 /
+    提特征 / 聚类 / 导出数据库 / 导出 Dolphin Overview PPT)。
+    所有步骤在后台 QThread 中执行, 运行期间按钮禁用, 结束后恢复并提示。"""
 
     root_changed = pyqtSignal(str)
     scan_finished = pyqtSignal()
@@ -1381,20 +1378,19 @@ class DashboardTab(QWidget):
     cluster_finished = pyqtSignal()
 
     STEPS = [
-        # (按钮文字, 脚本文件名, 是否需要先弹出保存对话框)
-        ("2. Scan Photos", "../Step1_scan_photo.py", False),
-        ("3. Locate Fin", "../Step2_locate_fin.py", False),
-        ("4. Extract Fin Features", "../Step3_extract_fin_feature.py", False),
-        ("5. Select good quality fin", "../Step4_filter_low_quality.py", False),
-        ("6. Clustering", "../Step5_sort_fin_automatic.py", False),
-        ("7. Export Database", "../Step6a_export_database.py", False),
-        ("8. Export Dolphin Overview PPT", "../Step6b_export_pptx.py", True),
+        # (按钮文字, 步骤可调用对象, 是否需要先弹出保存对话框)
+        ("2. Scan Photos", _scan_photos, False),
+        ("3. Locate Fin", _locate_fin, False),
+        ("4. Extract Fin Features", _extract_features, False),
+        ("5. Select good quality fin", _filter_quality, False),
+        ("6. Clustering", _cluster, False),
+        ("7. Export Database", _export_database, False),
+        ("8. Export Dolphin Overview PPT", _export_pptx, True),
     ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._root = None
-        self._script_dir = os.path.dirname(os.path.abspath(__file__))
         grid = QGridLayout()
         grid.setColumnStretch(1, 1)
         btn_root = QPushButton("1.  Set Root Folder")
@@ -1403,14 +1399,14 @@ class DashboardTab(QWidget):
         self.root_label = QLabel("(未设置)")
         self.root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         grid.addWidget(self.root_label, 0, 1)
-        for i, (text, script, save_dialog) in enumerate(self.STEPS, 1):
+        for i, (text, step_callable, save_dialog) in enumerate(self.STEPS, 1):
             btn = QPushButton(text)
             if save_dialog:
-                btn.clicked.connect(lambda _=False, s=script, b=btn:
-                                    self._run_step_with_save_dialog(s, b))
+                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
+                                    self._run_step_with_save_dialog(c, b))
             else:
-                btn.clicked.connect(lambda _=False, s=script, b=btn:
-                                    self._run_step(s, b))
+                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
+                                    self._run_step(c, b))
             grid.addWidget(btn, i, 0)
             if i == 1:  # Scan Images 右侧显示 PHOTO_METAINFO 状态
                 self._scan_status = QLabel()
@@ -1421,7 +1417,7 @@ class DashboardTab(QWidget):
             if i == 3:  # Extract Fin Features 右侧显示 FIN_DEEPFEATURES 状态
                 self._feature_status = QLabel()
                 grid.addWidget(self._feature_status, i, 1)
-        # 底部终端式日志: 显示各 QProcess 的 stdout/stderr
+        # 底部终端式日志: 显示各步骤的 stdout/stderr
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Consolas", 9))
@@ -1429,7 +1425,7 @@ class DashboardTab(QWidget):
             "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
             "border: 1px solid #3c3c3c; }")
         self._log.setMaximumBlockCount(500)
-        self._log.setPlaceholderText("子进程输出将显示在这里...")
+        self._log.setPlaceholderText("步骤输出将显示在这里...")
         lay = QVBoxLayout(self)
         lay.addLayout(grid)
         lay.addWidget(self._log, stretch=1)
@@ -1504,12 +1500,12 @@ class DashboardTab(QWidget):
         self._feature_status.setText("METAINFO/FIN_DEEPFEATURES found")
         self._feature_status.setStyleSheet("color: #5cb85c;")
 
-    def _run_step(self, script, btn):
-        """以子进程运行流水线脚本 (带当前根目录), 完成后恢复按钮并提示。"""
-        self._start_step(script, btn, [self._root])
+    def _run_step(self, step_callable, btn):
+        """在后台线程中直接调用步骤可调用对象 (传入当前根目录)。"""
+        self._start_step(step_callable, btn, [self._root])
 
-    def _run_step_with_save_dialog(self, script, btn):
-        """弹出保存对话框并把选中的路径作为额外参数传给脚本。"""
+    def _run_step_with_save_dialog(self, step_callable, btn):
+        """弹出保存对话框并把选中的路径作为额外参数传给步骤。"""
         if not self._root:
             QMessageBox.warning(self, "Doris",
                                 "请先通过 \"1. Set Root Folder\" 设置根目录")
@@ -1520,7 +1516,7 @@ class DashboardTab(QWidget):
             "PowerPoint (*.pptx)")
         if not out:
             return
-        self._start_step(script, btn, [self._root, out])
+        self._start_step(step_callable, btn, [self._root, out])
 
     def _append_log(self, text, color=None):
         """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。"""
@@ -1535,53 +1531,32 @@ class DashboardTab(QWidget):
             else:
                 self._log.appendPlainText("[%s] %s" % (stamp, line))
 
-    def _start_step(self, script, btn, args):
-        """启动脚本, args 为传给脚本的参数列表。
+    def _start_step(self, step_callable, btn, args):
+        """启动步骤, args 为传给可调用对象的参数列表。
 
-        开发模式下用 QProcess 调用当前 Python 解释器执行脚本;
-        PyInstaller 打包后没有独立解释器, 改用同进程线程执行。
+        直接在后台 QThread 中实例化类并调用方法, 无需 QProcess 或 runpy。
         """
         if not self._root:
             QMessageBox.warning(self, "Doris",
                                 "请先通过 \"1. Set Root Folder\" 设置根目录")
             return
-        path = os.path.join(self._script_dir, script)
-        if not os.path.isfile(path):
-            QMessageBox.warning(self, "Doris", "找不到脚本: %s" % path)
-            return
-        if getattr(sys, "frozen", False):
-            self._append_log(
-                "启动 %s (in-process): %s" % (btn.text(),
-                                             " ".join([path] + args)))
-        else:
-            self._append_log(
-                "启动 %s: %s %s" % (btn.text(), sys.executable,
-                                   " ".join([path] + args)))
+        self._append_log("启动 %s ..." % btn.text())
         btn.setEnabled(False)
         self._set_status_running(btn.text())
-        if getattr(sys, "frozen", False):
-            runner = StepRunner(path, args, self)
-            runner.log_text.connect(self._append_log)
-            runner.finished_with_code.connect(
-                lambda code, b=btn: self._step_finished(b, code))
-            runner.start()
-            return
-        proc = QProcess(self)
-        proc.readyReadStandardOutput.connect(
-            lambda: self._append_log(
-                bytes(proc.readAllStandardOutput()).decode(
-                    "utf-8", errors="replace")))
-        proc.readyReadStandardError.connect(
-            lambda: self._append_log(
-                bytes(proc.readAllStandardError()).decode(
-                    "utf-8", errors="replace"), color="#ff6b6b"))
-        proc.finished.connect(
-            lambda code, _status, b=btn: self._step_finished(b, code))
-        proc.start(sys.executable, [path] + args)
+
+        def _run():
+            step_callable(*args)
+
+        runner = ClassStepRunner(_run, self)
+        runner.log_text.connect(self._append_log)
+        runner.finished_with_code.connect(
+            lambda code, b=btn: self._step_finished(b, code))
+        runner.finished.connect(runner.deleteLater)
+        runner.start()
 
     def _set_status_running(self, btn_text):
         """根据正在运行的步骤, 把右侧状态标签设为 Scanning/Locating/Extracting。"""
-        if "Scan Images" in btn_text:
+        if "Scan Photos" in btn_text:
             self._scan_status.setText("Scanning")
             self._scan_status.setStyleSheet("color: #f0ad4e;")
         elif "Locate Fin" in btn_text:
