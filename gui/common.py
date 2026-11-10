@@ -6,18 +6,18 @@ import re
 import shutil
 import hashlib
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QListWidget, QListWidgetItem, QLabel, QVBoxLayout, QDialog,
     QScrollArea, QMessageBox, QGraphicsView, QGraphicsScene,
-    QStyledItemDelegate, QStyle, QStyleOptionViewItem, QShortcut,
+    QStyledItemDelegate, QStyle, QStyleOptionViewItem,
     QHBoxLayout, QPushButton, QMenu, QGraphicsRectItem,
     QGraphicsTextItem, QGraphicsItem, QInputDialog,
 )
-from PyQt5.QtGui import (
+from PyQt6.QtGui import (
     QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter,
-    QBrush, QColor, QDrag, QPen, QPalette, QKeySequence, QFont,
+    QBrush, QColor, QDrag, QPen, QPalette, QKeySequence, QFont, QShortcut,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QPointF, QRect, QRectF, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QPointF, QRect, QRectF, QTimer
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 THUMB_SIZE = 256
 # Dolphin 配对鳍格高度: 与格宽保持 18:10, 上下两鳍图无缝相叠不留缝
@@ -49,7 +49,7 @@ def draw_boxes(target, boxes, orig_w, orig_h):
         hide_cls = cls.startswith("_")  # '_' 前缀: 只用类别取颜色, 不叠加类别文字
         if hide_cls:
             cls = cls[1:]
-        color = BOX_COLORS.get(cls, Qt.yellow)
+        color = BOX_COLORS.get(cls, Qt.GlobalColor.yellow)
         p.setPen(QPen(color, pen_w))
         p.drawRect(rect)
         text = "" if hide_cls else cls
@@ -106,8 +106,8 @@ def draw_label(target, text):
     w, h = fm.horizontalAdvance(text) + 12, fm.height() + 6
     rect = QRect(2, target.height() - h - 2, w, h)
     p.fillRect(rect, QColor(0, 0, 0, 140))
-    p.setPen(Qt.white)
-    p.drawText(rect, Qt.AlignCenter, text)
+    p.setPen(Qt.GlobalColor.white)
+    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
     p.end()
 # ---------------------------------------------------------------------------
 # 缩略图后台加载 (多线程分片 + 磁盘缓存)
@@ -171,13 +171,13 @@ class ThumbLoader(QThread):
         trans = reader.transformation()
         stored_w, stored_h = reader.size().width(), reader.size().height()
         sz = QSize(reader.size())
-        if trans in (QImageIOHandler.TransformationRotate90,
-                     QImageIOHandler.TransformationRotate270,
-                     QImageIOHandler.TransformationFlipAndRotate90,
-                     QImageIOHandler.TransformationMirrorAndRotate90):
+        if trans & (QImageIOHandler.Transformation.TransformationRotate90 |
+                    QImageIOHandler.Transformation.TransformationRotate270 |
+                    QImageIOHandler.Transformation.TransformationFlipAndRotate90 |
+                    QImageIOHandler.Transformation.TransformationMirrorAndRotate90):
             sz.transpose()
         # setScaledSize 不保持宽高比, 需按原始尺寸(含 EXIF 旋转)手动算目标尺寸
-        sz.scale(self._thumb_size, self._thumb_size, Qt.KeepAspectRatio)
+        sz.scale(self._thumb_size, self._thumb_size, Qt.AspectRatioMode.KeepAspectRatio)
         reader.setScaledSize(sz)
         img = reader.read()
         if not img.isNull() and use_cache:
@@ -254,10 +254,10 @@ class DolphinLoader(ThumbLoader):
 
     def _compose(self, name, dl_fid, dr_fid, dl, dr, social_label=""):
         w, cell = THUMB_SIZE, FIN_CELL_H
-        out = QImage(w, cell * 2, QImage.Format_RGB32)
+        out = QImage(w, cell * 2, QImage.Format.Format_RGB32)
         out.fill(QColor(100, 100, 100))
         p = QPainter(out)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         for i, (path, tag, fid) in enumerate(
                 ((dl, "DL", dl_fid), (dr, "DR", dr_fid))):
             y0 = i * cell
@@ -266,8 +266,8 @@ class DolphinLoader(ThumbLoader):
                 if img is not None and not img.isNull():
                     # 居中裁到鳍格宽高比再精确填满, 上下两鳍无缝相叠
                     img = self._crop_ratio(img, w, cell)
-                    t = img.scaled(w, cell, Qt.IgnoreAspectRatio,
-                                   Qt.SmoothTransformation)
+                    t = img.scaled(w, cell, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                   Qt.TransformationMode.SmoothTransformation)
                     p.drawImage(0, y0, t)
             p.setPen(QColor(255, 255, 255))
             f = p.font()
@@ -306,8 +306,8 @@ class DolphinLoader(ThumbLoader):
         rect = QRect((w - tw) // 2 - 8, cell - th // 2 - 2,
                      tw + 16, th + 4)
         p.fillRect(rect, QColor(0, 0, 0, 0))
-        p.setPen(Qt.white)
-        p.drawText(rect, Qt.AlignCenter, name)
+        p.setPen(Qt.GlobalColor.white)
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, name)
         p.end()
         return out
 
@@ -322,26 +322,26 @@ class ThumbOverlayDelegate(QStyledItemDelegate):
         self.initStyleOption(opt, index)
         text = opt.text
         opt.text = ""  # 文本由我们叠加绘制 
-        selected = bool(opt.state & QStyle.State_Selected)
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
         # 选中/焦点态由我们在图标上绘制; 交给默认样式会在空文本区留下一小截高亮条
-        opt.state &= ~QStyle.State_Selected
-        opt.state &= ~QStyle.State_HasFocus
+        opt.state &= ~QStyle.StateFlag.State_Selected
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
         style = opt.widget.style() if opt.widget else QApplication.style()
-        style.drawControl(QStyle.CE_ItemViewItem, opt, painter, opt.widget)
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
         icon_rect = style.subElementRect(
-            QStyle.SE_ItemViewItemDecoration, opt, opt.widget)
+            QStyle.SubElement.SE_ItemViewItemDecoration, opt, opt.widget)
         if not icon_rect.isValid():
             icon_rect = opt.rect
         painter.save()
         if selected:  # 选中: 图标描边 + 轻微染色
-            hl = opt.palette.color(QPalette.Highlight)
+            hl = opt.palette.color(QPalette.ColorRole.Highlight)
             painter.setPen(QPen(hl, 4))
             painter.drawRect(icon_rect.adjusted(1, 1, -2, -2))
             painter.fillRect(icon_rect, QColor(hl.red(), hl.green(),
                                                hl.blue(), 40))
         # BestInFin 标记: 红色内边框
         best_set = getattr(opt.widget, "_best_in_fin", None)
-        if best_set and index.data(Qt.UserRole) in best_set:
+        if best_set and index.data(Qt.ItemDataRole.UserRole) in best_set:
             painter.setPen(QPen(QColor(255, 0, 0), 3))
             painter.drawRect(icon_rect.adjusted(3, 3, -3, -3))
         if text:
@@ -350,11 +350,11 @@ class ThumbOverlayDelegate(QStyledItemDelegate):
             bar = QRect(icon_rect.left(), icon_rect.top(),
                         icon_rect.width(), min(bar_h, icon_rect.height()))
             painter.fillRect(bar, self.BAR_COLOR)
-            painter.setPen(Qt.white)
-            elided = opt.fontMetrics.elidedText(text, Qt.ElideMiddle,
+            painter.setPen(Qt.GlobalColor.white)
+            elided = opt.fontMetrics.elidedText(text, Qt.TextElideMode.ElideMiddle,
                                                 bar.width() - 8)
             painter.drawText(bar.adjusted(4, 0, -4, 0),
-                             Qt.AlignLeft | Qt.AlignVCenter, elided)
+                             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
         painter.restore()
 
 
@@ -369,22 +369,22 @@ class ImageGrid(QListWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setViewMode(QListWidget.IconMode)
-        self.setResizeMode(QListWidget.Adjust)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setIconSize(QSize(THUMB_SIZE, int(0.67*THUMB_SIZE)))
         # 文件名叠加在图上(delegate 绘制), 单元格不再为文字预留高度
         self.setGridSize(QSize(THUMB_SIZE + 16, int(0.67*THUMB_SIZE + 16)))
         #self.setSpacing(8)
         self.setUniformItemSizes(True)
         # 滚轮按像素平滑滚动, 而不是整行跳动
-        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+        self.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.verticalScrollBar().setSingleStep(24)
         self.horizontalScrollBar().setSingleStep(24)
-        self.setMovement(QListWidget.Static)
-        self.setSelectionMode(QListWidget.ExtendedSelection)  # 多选
+        self.setMovement(QListWidget.Movement.Static)
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)  # 多选
         self.setDragEnabled(True)                             # 可拖出
-        self.setDragDropMode(QListWidget.DragOnly)            # 不允许放回自身
+        self.setDragDropMode(QListWidget.DragDropMode.DragOnly)            # 不允许放回自身
         self.setItemDelegate(ThumbOverlayDelegate(self))
         self._loaders = []
         self._items = {}
@@ -415,8 +415,8 @@ class ImageGrid(QListWidget):
     def set_accept_drops(self, on):
         """允许/禁止从其它网格拖入图片路径 (自身拖出的不算)。"""
         self._accept_drops = on
-        self.setDragDropMode(QListWidget.DragDrop if on
-                             else QListWidget.DragOnly)
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop if on
+                             else QListWidget.DragDropMode.DragOnly)
 
     def set_accept_self_drops(self, on):
         """允许/禁止在同网格内拖放到另一张图上 (Overview 模式合并用)。"""
@@ -451,14 +451,14 @@ class ImageGrid(QListWidget):
 
     def dragEnterEvent(self, event):
         if self._drop_ok(event):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
         if self._drop_ok(event):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -473,22 +473,22 @@ class ImageGrid(QListWidget):
             self.paths_dropped.emit(paths)
             item = self.itemAt(event.pos())
             if item is not None:
-                self.paths_dropped_on.emit(paths, item.data(Qt.UserRole))
-            event.setDropAction(Qt.MoveAction)
+                self.paths_dropped_on.emit(paths, item.data(Qt.ItemDataRole.UserRole))
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
 
     def mimeData(self, items):
         """拖拽时携带选中项的文件路径。"""
         md = QMimeData()
         md.setData(MIME_PATHS, "\n".join(
-            it.data(Qt.UserRole) for it in items).encode("utf-8"))
+            it.data(Qt.ItemDataRole.UserRole) for it in items).encode("utf-8"))
         return md
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MiddleButton:
+        if event.button() == Qt.MouseButton.MiddleButton:
             item = self.itemAt(event.pos())
             if item is not None:
-                self.middle_clicked.emit(item.data(Qt.UserRole))
+                self.middle_clicked.emit(item.data(Qt.ItemDataRole.UserRole))
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -503,11 +503,11 @@ class ImageGrid(QListWidget):
 
     def keyPressEvent(self, event):
         """Delete/Backspace: 把选中的图片路径发出排除请求, 由上层处理。"""
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+        if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             items = self.selectedItems()
             if items:
                 self.exclude_requested.emit(
-                    [it.data(Qt.UserRole) for it in items])
+                    [it.data(Qt.ItemDataRole.UserRole) for it in items])
                 event.accept()
                 return
         super().keyPressEvent(event)
@@ -522,40 +522,40 @@ class ImageGrid(QListWidget):
         pm = self._drag_pixmap(items)
         drag.setPixmap(pm)
         drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))  # 光标位于图像中心
-        drag.exec_(Qt.MoveAction)
+        drag.exec_(Qt.DropAction.MoveAction)
 
     @staticmethod
     def _drag_pixmap(items):
         base = items[0].icon().pixmap(96, 96)
         if base.isNull():
             # 缩略图尚未加载时直接从文件读一张小的
-            reader = QImageReader(items[0].data(Qt.UserRole))
+            reader = QImageReader(items[0].data(Qt.ItemDataRole.UserRole))
             reader.setAutoTransform(True)
             sz = QSize(reader.size())
-            sz.scale(96, 96, Qt.KeepAspectRatio)  # setScaledSize 不保宽高比
+            sz.scale(96, 96, Qt.AspectRatioMode.KeepAspectRatio)  # setScaledSize 不保宽高比
             reader.setScaledSize(sz)
             img = reader.read()
             base = QPixmap.fromImage(img) if not img.isNull() else QPixmap()
         if base.isNull():
             base = QPixmap(96, 96)
-            base.fill(Qt.lightGray)
+            base.fill(Qt.GlobalColor.lightGray)
         n = len(items)
         if n == 1:
             return base
         # 右上角画数量角标
         pm = base.copy()
         p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         badge = QRect(pm.width() - 34, 2, 32, 32)
         p.setBrush(QColor(30, 144, 255, 220))
-        p.setPen(Qt.NoPen)
+        p.setPen(Qt.PenStyle.NoPen)
         p.drawEllipse(badge)
-        p.setPen(Qt.white)
+        p.setPen(Qt.GlobalColor.white)
         f = p.font()
         f.setBold(True)
         f.setPixelSize(18)
         p.setFont(f)
-        p.drawText(badge, Qt.AlignCenter, str(n))
+        p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(n))
         p.end()
         return pm
 
@@ -571,7 +571,7 @@ class ImageGrid(QListWidget):
         for p in paths:
             # 文件名由 delegate 叠加在缩略图顶部(过长时中间省略), 无需换行处理
             item = QListWidgetItem(os.path.basename(p))
-            item.setData(Qt.UserRole, p)
+            item.setData(Qt.ItemDataRole.UserRole, p)
             item.setToolTip(p)
             # 必须在创建时给定尺寸, 否则视图按纯文字布局后图标加载不重排, 图像被裁
             item.setSizeHint(QSize(THUMB_SIZE + 16, THUMB_SIZE + 16))
@@ -607,7 +607,7 @@ class ImageGrid(QListWidget):
         for i in range(self.count()):
             item = self.item(i)
             if self.visualItemRect(item).intersects(rect):
-                p = item.data(Qt.UserRole)
+                p = item.data(Qt.ItemDataRole.UserRole)
                 if p not in self._loaded:
                     out.append(p)
         return out
@@ -660,14 +660,14 @@ class ImageGrid(QListWidget):
             item.setIcon(QIcon(QPixmap.fromImage(img)))
 
     def _open_full(self, item):
-        paths = [self.item(i).data(Qt.UserRole) for i in range(self.count())]
+        paths = [self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())]
         dlg = ImageViewerDialog(paths, self.row(item), self, boxes=self._boxes,
                                 labels=self._labels,
                                 on_exclude=self._full_open_exclude,
                                 on_best=self._full_open_best,
                                 on_move=self._full_open_move,
                                 box_editor=self._box_editor)
-        dlg.exec_()
+        dlg.exec()
 class _HandleItem(QGraphicsRectItem):
     """ResizableBoxItem 的 8 个拖拽把手 (角 + 边中点)。"""
 
@@ -685,15 +685,15 @@ class _HandleItem(QGraphicsRectItem):
 
     def _cursor_for(self, role):
         if role in ("tl", "br"):
-            return Qt.SizeFDiagCursor
+            return Qt.CursorShape.SizeFDiagCursor
         if role in ("tr", "bl"):
-            return Qt.SizeBDiagCursor
+            return Qt.CursorShape.SizeBDiagCursor
         if role in ("t", "b"):
-            return Qt.SizeVerCursor
-        return Qt.SizeHorCursor
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.SizeHorCursor
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             parent = self.parentItem()
             if isinstance(parent, ResizableBoxItem):
                 parent._start_handle_drag(self.role, event.scenePos())
@@ -730,7 +730,7 @@ class ResizableBoxItem(QGraphicsRectItem):
         self.setRect(QRectF(float(x0), float(y0),
                             max(1, float(x1) - float(x0)),
                             max(1, float(y1) - float(y0))))
-        color = BOX_COLORS.get(self._cls, Qt.yellow)
+        color = BOX_COLORS.get(self._cls, Qt.GlobalColor.yellow)
         self.setPen(QPen(color, max(2, min(image_w, image_h) // 400)))
         self.setAcceptHoverEvents(True)
         self._handles = {}
@@ -819,7 +819,7 @@ class ResizableBoxItem(QGraphicsRectItem):
         self._body_drag = False
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self._start_body_drag(event.scenePos())
             event.accept()
         else:
@@ -845,10 +845,10 @@ class ZoomableView(QGraphicsView):
 
     def __init__(self, scene, parent=None):
         super().__init__(scene, parent)
-        self.setRenderHint(QPainter.SmoothPixmapTransform)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)               # 拖拽平移
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)  # 以光标为中心缩放
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)               # 拖拽平移
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)  # 以光标为中心缩放
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
     def wheelEvent(self, event):
         factor = 1.25 if event.angleDelta().y() > 0 else 0.8
@@ -856,16 +856,16 @@ class ZoomableView(QGraphicsView):
 
     def zoom(self, factor):
         """以视图中心为锚点缩放 (键盘快捷键用; 滚轮仍以光标为中心)。"""
-        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.scale(factor, factor)
-        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def mouseDoubleClickEvent(self, event):
-        self.fitInView(self.scene().itemsBoundingRect(), Qt.KeepAspectRatio)
+        self.fitInView(self.scene().itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def keyPressEvent(self, event):
         # ←/→ 交给对话框做翻页, 不做滚动
-        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
             event.ignore()
         else:
             super().keyPressEvent(event)
@@ -928,7 +928,7 @@ class ImageViewerDialog(QDialog):
         self.setWindowTitle("%s  (%d/%d)" % (os.path.basename(path),
                                              index + 1, len(self._paths)))
         if not pm.isNull():
-            self.view.fitInView(self._scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+            self.view.fitInView(self._scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _enter_edit_mode(self):
         """进入框编辑模式: 显示无框原图, 并在其上放置可交互框。"""
@@ -938,7 +938,7 @@ class ImageViewerDialog(QDialog):
         pm = QPixmap.fromImage(reader.read())
         if not pm.isNull():
             self._item.setPixmap(pm)
-        self.view.setDragMode(QGraphicsView.NoDrag)
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
         boxes = self._boxes.get(path, [])
         self._edit_original_rects = []
         self._edit_items = []
@@ -975,7 +975,7 @@ class ImageViewerDialog(QDialog):
         self._edit_items = []
         self._edit_original_rects = []
         self._edit_mode = False
-        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self._show(self._index)
 
     def _enter_add_mode(self):
@@ -985,7 +985,7 @@ class ImageViewerDialog(QDialog):
         self._add_mode = True
         self._add_start = None
         self._add_rect_item = None
-        self.view.setDragMode(QGraphicsView.NoDrag)
+        self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.view.viewport().installEventFilter(self)
 
     def _cancel_add_mode(self):
@@ -995,7 +995,7 @@ class ImageViewerDialog(QDialog):
         if self._add_rect_item is not None:
             self._scene.removeItem(self._add_rect_item)
             self._add_rect_item = None
-        self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.view.viewport().removeEventFilter(self)
 
     def _finish_add_box(self, rect):
@@ -1023,24 +1023,24 @@ class ImageViewerDialog(QDialog):
     def eventFilter(self, obj, event):
         if not self._add_mode or obj is not self.view.viewport():
             return super().eventFilter(obj, event)
-        if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             self._add_start = self.view.mapToScene(event.pos())
             self._add_rect_item = self._scene.addRect(
                 QRectF(self._add_start, self._add_start),
                 QPen(QColor(0, 160, 255), 2))
             return True
-        if event.type() == event.MouseMove and self._add_rect_item is not None:
+        if event.type() == QEvent.Type.MouseMove and self._add_rect_item is not None:
             end = self.view.mapToScene(event.pos())
             self._add_rect_item.setRect(QRectF(self._add_start, end).normalized())
             return True
-        if event.type() == event.MouseButtonRelease and event.button() == Qt.LeftButton \
+        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton \
                 and self._add_rect_item is not None:
             end = self.view.mapToScene(event.pos())
             rect = QRectF(self._add_start, end).normalized()
             self._scene.removeItem(self._add_rect_item)
             self._add_rect_item = None
             self._add_mode = False
-            self.view.setDragMode(QGraphicsView.ScrollHandDrag)
+            self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.view.viewport().removeEventFilter(self)
             self._finish_add_box(rect)
             return True
@@ -1048,66 +1048,66 @@ class ImageViewerDialog(QDialog):
 
     def keyPressEvent(self, event):
         if self._add_mode:
-            if event.key() == Qt.Key_Escape:
+            if event.key() == Qt.Key.Key_Escape:
                 self._cancel_add_mode()
                 event.accept()
                 return
             event.accept()
             return
         if self._edit_mode:
-            if event.key() == Qt.Key_Escape:
+            if event.key() == Qt.Key.Key_Escape:
                 self._exit_edit_mode(save=False)
                 event.accept()
                 return
-            if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
                 # 编辑时禁止翻页
                 event.accept()
                 return
-            if event.key() in (Qt.Key_Equal, Qt.Key_Plus):
+            if event.key() in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
                 self.view.zoom(1.25)
                 event.accept()
                 return
-            if event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
+            if event.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
                 self.view.zoom(0.8)
                 event.accept()
                 return
-            if event.key() == Qt.Key_W and \
-                    event.modifiers() & Qt.ControlModifier:
+            if event.key() == Qt.Key.Key_W and \
+                    event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.close()
                 event.accept()
                 return
             super().keyPressEvent(event)
             return
-        if event.key() == Qt.Key_Left:
+        if event.key() == Qt.Key.Key_Left:
             self._show(self._index - 1)   # 上一张
-        elif event.key() == Qt.Key_Right:
+        elif event.key() == Qt.Key.Key_Right:
             self._show(self._index + 1)   # 下一张
-        elif event.key() in (Qt.Key_Equal, Qt.Key_Plus):
+        elif event.key() in (Qt.Key.Key_Equal, Qt.Key.Key_Plus):
             self.view.zoom(1.25)          # =/+ 放大
-        elif event.key() in (Qt.Key_Minus, Qt.Key_Underscore):
+        elif event.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
             self.view.zoom(0.8)           # - 缩小
-        elif event.key() == Qt.Key_A and self._box_editor is not None:
+        elif event.key() == Qt.Key.Key_A and self._box_editor is not None:
             self._enter_add_mode()
             event.accept()
-        elif event.key() == Qt.Key_W and \
-                event.modifiers() & Qt.ControlModifier:
+        elif event.key() == Qt.Key.Key_W and \
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.close()                  # Ctrl+W 关闭
-        elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace) \
+        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) \
                 and self._on_exclude is not None:
             self._on_exclude([self._paths[self._index]])
             self.close()
             event.accept()
-        elif event.key() == Qt.Key_B and self._on_best is not None:
+        elif event.key() == Qt.Key.Key_B and self._on_best is not None:
             self._on_best([self._paths[self._index]])
             event.accept()
-        elif event.key() == Qt.Key_M and self._on_misc is not None:
+        elif event.key() == Qt.Key.Key_M and self._on_misc is not None:
             self._on_misc([self._paths[self._index]])
             event.accept()
-        elif event.modifiers() & Qt.AltModifier and self._on_move is not None:
+        elif event.modifiers() & Qt.KeyboardModifier.AltModifier and self._on_move is not None:
             # Alt+1..9: 移入第 N 个分组
             key = event.key()
-            if Qt.Key_1 <= key <= Qt.Key_9:
-                self._on_move(self._paths[self._index], key - Qt.Key_1)
+            if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
+                self._on_move(self._paths[self._index], key - Qt.Key.Key_1)
                 event.accept()
                 return
             super().keyPressEvent(event)

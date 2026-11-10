@@ -29,7 +29,8 @@ class Dataset:
         self.photo_df = self._load_meta("PHOTO_METAINFO.csv")
         self.fin_df = self._load_meta("FIN_METAINFO.csv")
         if not self.fin_df.empty:
-            self.fin_df = self.fin_df.sort_values(by="identity") 
+            if "identity" in self.fin_df.columns:
+                self.fin_df = self.fin_df.sort_values(by="identity") 
             self.fin_df["fullpath"] = self.root + "/" + self.fin_df["Path"]
             if "Clear" not in self.fin_df.columns:
                 # True=Clear, False=Blur, 空=Mid(未判定)
@@ -37,7 +38,7 @@ class Dataset:
             if "FinID" in self.fin_df.columns:
                 self.fin_df["FinID"] = self.fin_df["FinID"].map(
                     self._fid_key)
-        if not self.photo_df.empty:
+        if "PhotoName" in self.photo_df.columns:
             self.photo_df = self.photo_df.sort_values(by="PhotoName") 
         self._cache = {}
 

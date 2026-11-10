@@ -10,15 +10,15 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget, QTabWidget, QSplitter, QListWidget, QListWidgetItem,
     QLabel, QVBoxLayout, QHBoxLayout, QDialog, QScrollArea,
-    QFileDialog, QMessageBox, QShortcut, QPushButton,
+    QFileDialog, QMessageBox, QPushButton,
     QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox, QComboBox,
     QGridLayout, QPlainTextEdit,
 )
-from PyQt5.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush, QShortcut
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
 
 from doris_dataset import Dataset
 from .common import (
@@ -55,7 +55,7 @@ class GroupListWidget(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QListWidget.DropOnly)
+        self.setDragDropMode(QListWidget.DragDropMode.DropOnly)
         self._hover_item = None  # 拖拽悬停高亮的分组项
         self._accept_empty = False
 
@@ -81,7 +81,7 @@ class GroupListWidget(QListWidget):
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(MIME_PATHS):
-            event.setDropAction(Qt.MoveAction)  # 移动光标
+            event.setDropAction(Qt.DropAction.MoveAction)  # 移动光标
             event.accept()
         else:
             event.ignore()
@@ -89,7 +89,7 @@ class GroupListWidget(QListWidget):
     def dragMoveEvent(self, event):
         if event.mimeData().hasFormat(MIME_PATHS):
             self._set_hover(self.itemAt(event.pos()))  # 经过时高亮
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -110,12 +110,12 @@ class GroupListWidget(QListWidget):
             event.ignore()
             return
         if item is not None:
-            self.paths_dropped.emit(paths, item.data(Qt.UserRole))
-            event.setDropAction(Qt.MoveAction)
+            self.paths_dropped.emit(paths, item.data(Qt.ItemDataRole.UserRole))
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         elif self._accept_empty:
             self.empty_area_dropped.emit(paths)
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -199,12 +199,12 @@ class GroupedTab(QWidget):
         self.excluded_grid = None
         self._excluded = []         # [(参考组名, 鳍图路径)] 拖入排除区的记录
         self._needs_refresh = False  # 隐藏时标记脏, 切回前台再刷新
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.group_list = GroupListWidget()
         self.group_list.setMinimumWidth(60)   # 保证初始宽度, 否则 splitter 按空列表 sizeHint 给得很窄
         self.group_list.setMaximumWidth(120)
         self.group_list.setWordWrap(False)
-        self.group_list.setTextElideMode(Qt.ElideNone)  # 不省略
+        self.group_list.setTextElideMode(Qt.TextElideMode.ElideNone)  # 不省略
         self.grid = ImageGrid()
         self.grid.set_box_editor(box_editor)
         self.splitter.addWidget(self.group_list)
@@ -248,8 +248,8 @@ class GroupedTab(QWidget):
                 self.mode_btn = QToolButton()
                 self.mode_btn.setText("Mode: Review Mode")
                 self.mode_btn.setIcon(self._mode_icon())
-                self.mode_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-                self.mode_btn.setPopupMode(QToolButton.InstantPopup)
+                self.mode_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+                self.mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
                 self.mode_btn.setToolTip("选择浏览模式")
                 self.mode_btn.setMenu(menu)
                 top.addWidget(self.mode_btn)
@@ -312,7 +312,7 @@ class GroupedTab(QWidget):
         if self._alt_move:
             for i in range(1, 10):
                 sc = QShortcut(QKeySequence("Alt+%d" % i), self)
-                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
                 sc.activated.connect(
                     lambda i=i: self._move_to_group_index(i - 1))
         if self._best_marker is not None or self._exclude is not None:
@@ -320,7 +320,7 @@ class GroupedTab(QWidget):
             self.grid.right_clicked.connect(self._on_grid_menu)
         if self._best_marker is not None:
             sc = QShortcut(QKeySequence("B"), self)
-            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(self._mark_best_selected)
         if self._exclude is not None:
             # Delete 键: 把上方当前组选中的鳍图移入排除区
@@ -343,15 +343,15 @@ class GroupedTab(QWidget):
         items = self.grid.selectedItems()
         if not items:
             return
-        target = self.group_list.item(idx).data(Qt.UserRole)
-        paths = [it.data(Qt.UserRole) for it in items]
+        target = self.group_list.item(idx).data(Qt.ItemDataRole.UserRole)
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
         self._on_drop(paths, target)
 
     def _full_open_move(self, path, idx):
         """大图查看窗口中 Alt+N: 把当前图片移入侧边第 N 组。"""
         if idx >= self.group_list.count():
             return
-        target = self.group_list.item(idx).data(Qt.UserRole)
+        target = self.group_list.item(idx).data(Qt.ItemDataRole.UserRole)
         self._on_drop([path], target)
 
     def _on_middle(self, path):
@@ -386,7 +386,7 @@ class GroupedTab(QWidget):
                 return
         cur = self.group_list.currentItem()
         group_paths = self._groups.get(
-            cur.data(Qt.UserRole), [path]) if cur else [path]
+            cur.data(Qt.ItemDataRole.UserRole), [path]) if cur else [path]
         origs = []
         for p in group_paths:
             o = self._full_resolver(p)
@@ -418,13 +418,13 @@ class GroupedTab(QWidget):
                                 on_misc=_misc_for_middle
                                 if self._photo_type_setter is not None
                                 else None)
-        dlg.exec_()
+        dlg.exec()
 
     def set_groups(self, groups, tooltips=None, keep_current=False, boxes=None):
         """groups: dict[str, list[str]] — 组名 -> 图片路径列表 (有序)
         boxes: dict[str, list] — 图片路径 -> 鳍框列表 (可选, 画在缩略图和大图上)"""
         cur = self.group_list.currentItem()
-        cur_name = cur.data(Qt.UserRole) if (keep_current and cur) else None
+        cur_name = cur.data(Qt.ItemDataRole.UserRole) if (keep_current and cur) else None
         self._groups = groups
         self._tooltips = tooltips or {}
         self._boxes = boxes or {}
@@ -434,7 +434,7 @@ class GroupedTab(QWidget):
             if self._alt_move and i <= 9:  # 标注 Alt+N 快捷键
                 display = "%d. %s" % (i, display)
             item = QListWidgetItem(display, self.group_list)
-            item.setData(Qt.UserRole, name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
             item.setToolTip(self._tooltips.get(name, name))
             # 给足行高; 宽度不强行撑大, 让侧边栏保持紧凑
             item.setSizeHint(QSize(160, 28))
@@ -455,9 +455,9 @@ class GroupedTab(QWidget):
     def _mode_icon():
         """"Mode" 按钮图标: 三行滑块样式。"""
         pm = QPixmap(16, 16)
-        pm.fill(Qt.transparent)
+        pm.fill(Qt.GlobalColor.transparent)
         p = QPainter(pm)
-        p.setPen(Qt.NoPen)
+        p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(90, 90, 90))
         for i in range(3):
             p.drawRect(1, 2 + i * 5, 14, 3)
@@ -530,9 +530,9 @@ class GroupedTab(QWidget):
         self._tri = True
         self.grid.set_accept_drops(True)
         self.grid.paths_dropped.connect(self._on_top_drop)
-        self.vsplit = QSplitter(Qt.Vertical)
+        self.vsplit = QSplitter(Qt.Orientation.Vertical)
         self.vsplit.addWidget(self.grid)  # 从主 splitter 移入上半部
-        bottom = QSplitter(Qt.Horizontal)
+        bottom = QSplitter(Qt.Orientation.Horizontal)
         self.similar_grid = ImageGrid()
         self.similar_grid.setDragEnabled(True)   # 可拖出到上方/排除区
         self.similar_grid.middle_clicked.connect(self._on_middle)
@@ -578,7 +578,7 @@ class GroupedTab(QWidget):
         if self.excluded_grid is None:
             return
         cur = self.group_list.currentItem()
-        g = cur.data(Qt.UserRole) if cur else None
+        g = cur.data(Qt.ItemDataRole.UserRole) if cur else None
         paths = [p for gp, p in self._excluded if gp == g]
         self.excluded_grid.show_images(paths, labels=self._labels)
 
@@ -588,7 +588,7 @@ class GroupedTab(QWidget):
         cur = self.group_list.currentItem()
         if cur is None:
             return
-        gname = cur.data(Qt.UserRole)
+        gname = cur.data(Qt.ItemDataRole.UserRole)
         excl = {p for gp, p in self._excluded if gp == gname}
         from_excl = [p for p in paths if p in excl]
         other = [p for p in paths if p not in excl]
@@ -622,7 +622,7 @@ class GroupedTab(QWidget):
         cur = self.group_list.currentItem()
         if cur is None:
             return
-        gname = cur.data(Qt.UserRole)
+        gname = cur.data(Qt.ItemDataRole.UserRole)
         cur_paths = set(self._groups.get(gname, []))
         from_cur = [p for p in paths if p in cur_paths]
         from_sim = [p for p in paths if p not in cur_paths]
@@ -678,7 +678,7 @@ class GroupedTab(QWidget):
         items = self.grid.selectedItems()
         if not items:
             return
-        paths = [it.data(Qt.UserRole) for it in items]
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
         try:
             changed = self._best_marker(paths)
         except Exception as e:
@@ -698,7 +698,7 @@ class GroupedTab(QWidget):
         items = self.grid.selectedItems()
         if not items:
             return
-        paths = [it.data(Qt.UserRole) for it in items]
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
         self._on_exclude_drop(paths, use_track=self._use_track_for_exclude())
 
     def _on_similar_grid_menu(self, pos):
@@ -716,7 +716,7 @@ class GroupedTab(QWidget):
         items = self.similar_grid.selectedItems()
         if not items:
             return
-        paths = [it.data(Qt.UserRole) for it in items]
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
         self._on_exclude_drop(paths, use_track=self._use_track_for_exclude())
 
     def _full_open_exclude_cb(self, paths):
@@ -744,7 +744,7 @@ class GroupedTab(QWidget):
         item = self.group_list.itemAt(self.group_list.mapFromGlobal(pos))
         if item is None:
             return
-        fin_id = item.data(Qt.UserRole)
+        fin_id = item.data(Qt.ItemDataRole.UserRole)
         menu = QMenu(self)
         act = menu.addAction("Assign DolphinID")
         act.triggered.connect(lambda: self._assign_dolphin_to_fin_id(fin_id))
@@ -771,7 +771,7 @@ class GroupedTab(QWidget):
         reply = QMessageBox.question(
             self, "Rename ID",
             "确定把所有 FinID 重新编号为 Fin001..FinNNN 吗?")
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         try:
             mapping = self._renamer()
@@ -800,7 +800,7 @@ class GroupedTab(QWidget):
         item = self.group_list.currentItem()
         if item is None:
             return
-        paths = self._groups.get(item.data(Qt.UserRole), [])
+        paths = self._groups.get(item.data(Qt.ItemDataRole.UserRole), [])
         if self._best_only and self._best_mark is not None:
             paths = self._filter_best(paths)
         elif self._clear_only and self._clear_mark is not None:
@@ -814,12 +814,12 @@ class GroupedTab(QWidget):
                 self.similar_grid._best_in_fin = best_set
         if self._tri and self.similar_grid is not None:
             sim_paths, sim_labels = self._similar_provider(
-                item.data(Qt.UserRole))
+                item.data(Qt.ItemDataRole.UserRole))
             labels = dict(self._labels)
             labels.update(sim_labels)  # 相似度标签优先
             self.similar_grid.show_images(sim_paths, labels=labels)
             self._refresh_excluded()  # 排除区跟随当前参考组
-        self._update_shot_widgets(item.data(Qt.UserRole))
+        self._update_shot_widgets(item.data(Qt.ItemDataRole.UserRole))
 
     def _update_shot_widgets(self, group_name):
         """Continuous Shots 页: 根据当前 shot 更新 ShotType 下拉框与信息标签。"""
@@ -855,7 +855,7 @@ class GroupedTab(QWidget):
         item = self.group_list.currentItem()
         if item is None:
             return
-        group_name = item.data(Qt.UserRole)
+        group_name = item.data(Qt.ItemDataRole.UserRole)
         if not isinstance(group_name, str) or "_" not in group_name:
             return
         shot_id = group_name.split("_", 1)[1]
@@ -930,7 +930,7 @@ class StatisticsTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         from matplotlib.figure import Figure
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
         self._root = None
         self._fin_counts = None
         self._shot_counts = None
@@ -1397,7 +1397,7 @@ class DashboardTab(QWidget):
         btn_root.clicked.connect(self._pick_root)
         grid.addWidget(btn_root, 0, 0)
         self.root_label = QLabel("(未设置)")
-        self.root_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         grid.addWidget(self.root_label, 0, 1)
         for i, (text, step_callable, save_dialog) in enumerate(self.STEPS, 1):
             btn = QPushButton(text)
@@ -1442,10 +1442,10 @@ class DashboardTab(QWidget):
     def _pick_root(self):
         """弹出非原生目录选择对话框, 避免某些平台下原生对话框点击"打开"不关闭的问题。"""
         dlg = QFileDialog(self, "选择 PHOTO 根目录", self._root or "")
-        dlg.setFileMode(QFileDialog.Directory)
-        dlg.setOption(QFileDialog.DontUseNativeDialog)
-        dlg.setOption(QFileDialog.ShowDirsOnly, True)
-        if dlg.exec_() == QDialog.Accepted:
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
             files = dlg.selectedFiles()
             if files:
                 self.root_changed.emit(files[0])

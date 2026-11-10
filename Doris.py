@@ -11,17 +11,17 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
 import os
 import sys
 
-import PyQt5
-from PyQt5.QtWidgets import QApplication, QMessageBox
+import PyQt6
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
-# PyQt5 wheel bug: Qt derives its plugin path from the library location and
+# PyQt6 wheel bug: Qt derives its plugin path from the library location and
 # mangles non-ASCII characters in it, leaving the plugin search path empty
 # ("Could not find the Qt platform plugin ... in ''" / wayland shell
 # integration not found). Point Qt at the whole bundled plugin tree
 # explicitly before QApplication is created.
 os.environ.setdefault(
     "QT_PLUGIN_PATH",
-    os.path.join(os.path.dirname(PyQt5.__file__), "Qt5", "plugins"),
+    os.path.join(os.path.dirname(PyQt6.__file__), "Qt6", "plugins"),
 )
 
 from gui import MainWindow
@@ -38,4 +38,4 @@ if __name__ == "__main__":
         root = "demo"
     win = MainWindow(root)
     win.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

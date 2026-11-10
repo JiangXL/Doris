@@ -7,16 +7,16 @@ import re
 import pandas as pd
 import numpy as np
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QWidget, QListWidget, QListWidgetItem, QLabel, QVBoxLayout,
     QHBoxLayout, QSplitter, QScrollArea, QPushButton, QFrame,
-    QMessageBox, QDialog, QShortcut,
+    QMessageBox, QDialog,
 )
-from PyQt5.QtGui import (
+from PyQt6.QtGui import (
     QPixmap, QIcon, QImageReader, QPainter, QColor, QPen, QDrag, QFont,
-    QKeySequence,
+    QKeySequence, QShortcut,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF
 
 from .common import (
     ImageGrid, DolphinLoader, ThumbOverlayDelegate, ZoomableView,
@@ -38,22 +38,22 @@ class DolphinTab(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         cell = FIN_CELL_H
-        self.setViewMode(QListWidget.IconMode)
-        self.setResizeMode(QListWidget.Adjust)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setIconSize(QSize(THUMB_SIZE, cell * 2))  # 上下两格
         self.setGridSize(QSize(THUMB_SIZE + 16, cell * 2 + 16))
         self.setUniformItemSizes(True)
-        self.setMovement(QListWidget.Static)
+        self.setMovement(QListWidget.Movement.Static)
         # 滚轮按像素平滑滚动
-        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
-        self.setHorizontalScrollMode(QListWidget.ScrollPerPixel)
+        self.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.verticalScrollBar().setSingleStep(24)
         self.horizontalScrollBar().setSingleStep(24)
         self.setItemDelegate(ThumbOverlayDelegate(self))
-        self.setSelectionMode(QListWidget.SingleSelection)
+        self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QListWidget.DragDrop)
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
         self.setDropIndicatorShown(True)
         # Movement.Static 会让 Qt 关掉 viewport 的 acceptDrops (静态视图不允许
         # 内部移动), 导致拖放根本投递不进来; 当前的 dropEvent 自己处理落点,
@@ -81,7 +81,7 @@ class DolphinTab(QListWidget):
         social = self._social
         for name, dl_fid, dr_fid, dl, dr in dolphins:
             item = QListWidgetItem()  # 名称由合成图画在上下鳍之间, 不再用顶部条
-            item.setData(Qt.UserRole, (name, dl_fid, dr_fid, dl, dr))
+            item.setData(Qt.ItemDataRole.UserRole, (name, dl_fid, dr_fid, dl, dr))
             # 创建时给定尺寸, 否则图标加载后视图不重排
             item.setSizeHint(QSize(THUMB_SIZE + 16, cell * 2 + 16))
             self.addItem(item)
@@ -124,7 +124,7 @@ class DolphinTab(QListWidget):
     def mousePressEvent(self, event):
         self._press_top = False
         self._press_bottom = False
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(event.pos())
             if item is not None:
                 r = self.visualItemRect(item)
@@ -138,10 +138,10 @@ class DolphinTab(QListWidget):
         if item is not None:
             r = self.visualItemRect(item)
             bottom = event.pos().y() > r.top() + r.height() // 2
-            name, dl_fid, dr_fid, dl, dr = item.data(Qt.UserRole)
+            name, dl_fid, dr_fid, dl, dr = item.data(Qt.ItemDataRole.UserRole)
             path = dr if bottom else dl
             if path:
-                ImageViewerDialog([path], 0, self).exec_()
+                ImageViewerDialog([path], 0, self).exec()
         super().mouseDoubleClickEvent(event)
 
     def startDrag(self, actions):
@@ -149,7 +149,7 @@ class DolphinTab(QListWidget):
         item = self.currentItem()
         if item is None:
             return
-        name, dl_fid, dr_fid, dl, dr = item.data(Qt.UserRole)
+        name, dl_fid, dr_fid, dl, dr = item.data(Qt.ItemDataRole.UserRole)
         if self._press_top:
             # 移动整个海豚格
             md = QMimeData()
@@ -159,10 +159,10 @@ class DolphinTab(QListWidget):
             pm = item.icon().pixmap(THUMB_SIZE, FIN_CELL_H * 2)
             if pm.isNull():
                 pm = QPixmap(96, 128)
-                pm.fill(Qt.lightGray)
+                pm.fill(Qt.GlobalColor.lightGray)
             drag.setPixmap(pm)
             drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
-            drag.exec_(Qt.MoveAction)
+            drag.exec_(Qt.DropAction.MoveAction)
             return
         if not self._press_bottom or dr_fid is None:
             return
@@ -174,16 +174,16 @@ class DolphinTab(QListWidget):
         pm = pm.copy(0, FIN_CELL_H, THUMB_SIZE, FIN_CELL_H)  # 只取 DR 半格
         if pm.isNull():
             pm = QPixmap(96, 64)
-            pm.fill(Qt.lightGray)
+            pm.fill(Qt.GlobalColor.lightGray)
         drag.setPixmap(pm)
         drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
-        drag.exec_(Qt.MoveAction)
+        drag.exec_(Qt.DropAction.MoveAction)
 
     def dragEnterEvent(self, event):
         # 接受海豚格重排 (DOLPHIN_MIME) 与 DR 鳍交换 (DR_MIME)
         if event.mimeData().hasFormat(self.DR_MIME) \
                 or event.mimeData().hasFormat(self.DOLPHIN_MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -191,7 +191,7 @@ class DolphinTab(QListWidget):
     def dragMoveEvent(self, event):
         if event.mimeData().hasFormat(self.DR_MIME) \
                 or event.mimeData().hasFormat(self.DOLPHIN_MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -207,13 +207,13 @@ class DolphinTab(QListWidget):
             if item is None:
                 self._move_dolphin_to_end(src)
             else:
-                dst = item.data(Qt.UserRole)[0]
+                dst = item.data(Qt.ItemDataRole.UserRole)[0]
                 if src != dst:
                     self._move_dolphin_before(src, dst)
                 else:
                     event.ignore()
                     return
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
             return
         if not md.hasFormat(self.DR_MIME):
@@ -227,13 +227,13 @@ class DolphinTab(QListWidget):
         if item is None:
             # 拖到空白处: 用该海豚的 DR 鳍创建一只新海豚
             self.dr_dropped_on_empty.emit(src)
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
             return
-        dst = item.data(Qt.UserRole)[0]
+        dst = item.data(Qt.ItemDataRole.UserRole)[0]
         if src != dst:
             self.dr_swapped.emit(src, dst)
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -283,9 +283,9 @@ class FinSlot(QLabel):
         self._zoom = 1.0       # 相对适应窗口的倍率 (1 = 适应)
         self._off = QPoint(0, 0)  # 平移偏移 (屏幕像素)
         self._press = None
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(240, 140)
-        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setAcceptDrops(True)
         self.setToolTip("滚轮或 +/- 缩放, 0 复位, 放大后左键拖拽平移;\n"
                         "未放大时把鳍图拖到格外 (候选栏/海豚列表) = 确认不匹配;\n"
@@ -302,7 +302,7 @@ class FinSlot(QLabel):
             return
         reader = QImageReader(path)
         sz = QSize(reader.size())
-        sz.scale(1280, 800, Qt.KeepAspectRatio)
+        sz.scale(1280, 800, Qt.AspectRatioMode.KeepAspectRatio)
         reader.setScaledSize(sz)
         pm = QPixmap.fromImage(reader.read())
         if pm.isNull():
@@ -340,7 +340,7 @@ class FinSlot(QLabel):
         if self._pm is None or self._pm.isNull():
             return
         p = QPainter(self)
-        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         x, y, tw, th = self._img_rect()
         p.drawPixmap(QRectF(x, y, tw, th), self._pm,
                      QRectF(self._pm.rect()))
@@ -383,7 +383,7 @@ class FinSlot(QLabel):
                       event.pos())
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.fid is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self.fid is not None:
             self._press = event.pos()
         super().mousePressEvent(event)
 
@@ -406,23 +406,23 @@ class FinSlot(QLabel):
             drag.setMimeData(md)
             if self._pm is not None and not self._pm.isNull():
                 drag.setPixmap(self._pm.scaledToWidth(
-                    96, Qt.SmoothTransformation))
+                    96, Qt.TransformationMode.SmoothTransformation))
             # 只有落点接受拖出 (候选栏/海豚列表) 才算确认不匹配;
             # 拖到空白处松手返回 IgnoreAction, 视为误操作
-            if drag.exec_(Qt.MoveAction) != Qt.IgnoreAction:
+            if drag.exec_(Qt.DropAction.MoveAction) != Qt.DropAction.IgnoreAction:
                 self.dropped_out.emit(self.cls, str(self.fid))
         super().mouseMoveEvent(event)
 
     # -- 双击打开大图查看窗口 --------------------------------------------------
     def mouseDoubleClickEvent(self, event):
         if self._path:
-            ImageViewerDialog([self._path], 0, self).exec_()
+            ImageViewerDialog([self._path], 0, self).exec()
         super().mouseDoubleClickEvent(event)
 
     # -- 候选拖入 = 确认配对 --------------------------------------------------
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(CandidateList.MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -437,7 +437,7 @@ class FinSlot(QLabel):
         fid = bytes(event.mimeData().data(CandidateList.MIME)).decode("utf-8")
         if fid:
             self.candidate_dropped.emit(fid)
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -452,15 +452,15 @@ class CandidateList(QListWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setViewMode(QListWidget.IconMode)
-        self.setResizeMode(QListWidget.Adjust)
+        self.setViewMode(QListWidget.ViewMode.IconMode)
+        self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setIconSize(QSize(220, 150))
         self.setGridSize(QSize(240, 170))
         self.setUniformItemSizes(True)
-        self.setMovement(QListWidget.Static)
+        self.setMovement(QListWidget.Movement.Static)
         self.setDragEnabled(True)
         self.setAcceptDrops(True)
-        self.setDragDropMode(QListWidget.DragDrop)
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
         self.viewport().setAcceptDrops(True)
         self._loaders = []
         self._items = {}
@@ -475,8 +475,8 @@ class CandidateList(QListWidget):
         self._imgs = {}
         for fid, p in zip(fids, paths):
             item = QListWidgetItem()
-            item.setData(Qt.UserRole, str(fid))
-            item.setData(Qt.UserRole + 1, p)
+            item.setData(Qt.ItemDataRole.UserRole, str(fid))
+            item.setData(Qt.ItemDataRole.UserRole + 1, p)
             item.setSizeHint(self.gridSize())
             self.addItem(item)
             self._items[p] = item
@@ -503,8 +503,8 @@ class CandidateList(QListWidget):
             # 否则 256px 的缩略图在大格子里仍显示为小图
             sz = self.iconSize()
             if img.width() < sz.width() or img.height() < sz.height():
-                img = img.scaled(sz, Qt.KeepAspectRatio,
-                                 Qt.SmoothTransformation)
+                img = img.scaled(sz, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
             item.setIcon(QIcon(QPixmap.fromImage(img)))
 
     def _stop_loaders(self):
@@ -531,29 +531,29 @@ class CandidateList(QListWidget):
         if item is None:
             return
         md = QMimeData()
-        md.setData(self.MIME, str(item.data(Qt.UserRole)).encode("utf-8"))
+        md.setData(self.MIME, str(item.data(Qt.ItemDataRole.UserRole)).encode("utf-8"))
         drag = QDrag(self)
         drag.setMimeData(md)
         pm = item.icon().pixmap(self.iconSize())
         if pm.isNull():
             pm = QPixmap(96, 64)
-            pm.fill(Qt.lightGray)
+            pm.fill(Qt.GlobalColor.lightGray)
         drag.setPixmap(pm)
-        drag.exec_(Qt.MoveAction)
+        drag.exec_(Qt.DropAction.MoveAction)
 
     # -- 双击打开大图查看窗口 --------------------------------------------------
     def mouseDoubleClickEvent(self, event):
         item = self.itemAt(event.pos())
         if item is not None:
-            p = item.data(Qt.UserRole + 1)
+            p = item.data(Qt.ItemDataRole.UserRole + 1)
             if p:
-                ImageViewerDialog([p], 0, self).exec_()
+                ImageViewerDialog([p], 0, self).exec()
         super().mouseDoubleClickEvent(event)
 
     # -- 接受左侧鳍格的拖出落点 (no-op, 拖拽完成即确认不匹配) -----------------
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(FinSlot.OUT_MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -563,7 +563,7 @@ class CandidateList(QListWidget):
 
     def dropEvent(self, event):
         if event.mimeData().hasFormat(FinSlot.OUT_MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()  # 不匹配由 FinSlot 在拖拽完成时发出信号
         else:
             event.ignore()
@@ -590,7 +590,7 @@ class MatchPanel(QWidget):
         self.dolphin_list.setAcceptDrops(True)
         self.dolphin_list.viewport().setAcceptDrops(True)
         self.dolphin_list.setWordWrap(False)
-        self.dolphin_list.setTextElideMode(Qt.ElideNone)
+        self.dolphin_list.setTextElideMode(Qt.TextElideMode.ElideNone)
         self.dolphin_list.setMaximumWidth(200)
         self.dolphin_list.currentRowChanged.connect(self._on_select)
         lay.addWidget(self.dolphin_list, 0)
@@ -620,16 +620,16 @@ class MatchPanel(QWidget):
 
         # 缩放宽快捷键: 用 QShortcut 而不是 keyPressEvent, 否则焦点落在
         # 列表/鳍格子控件时按键会被它们吃掉, 面板的 keyPressEvent 收不到
-        for key in (Qt.Key_Plus, Qt.Key_Equal):
+        for key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             sc = QShortcut(QKeySequence(key), self,
-                           context=Qt.WidgetWithChildrenShortcut)
+                           context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(self._zoom_in_all)
-        for key in (Qt.Key_Minus, Qt.Key_Underscore):
+        for key in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
             sc = QShortcut(QKeySequence(key), self,
-                           context=Qt.WidgetWithChildrenShortcut)
+                           context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(self._zoom_out_all)
-        sc = QShortcut(QKeySequence(Qt.Key_0), self,
-                       context=Qt.WidgetWithChildrenShortcut)
+        sc = QShortcut(QKeySequence(Qt.Key.Key_0), self,
+                       context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc.activated.connect(self._zoom_reset_all)
 
     def _zoom_in_all(self):
@@ -647,7 +647,7 @@ class MatchPanel(QWidget):
     @staticmethod
     def _list_accept_out(event):
         if event.mimeData().hasFormat(FinSlot.OUT_MIME):
-            event.setDropAction(Qt.MoveAction)
+            event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
             event.ignore()
@@ -669,11 +669,11 @@ class MatchPanel(QWidget):
     def keyPressEvent(self, event):
         """+/= 放大, - 缩小, 0 复位 (快捷键兜底, 见 __init__ 的 QShortcut)。"""
         k = event.key()
-        if k in (Qt.Key_Plus, Qt.Key_Equal):
+        if k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
             self._zoom_in_all()
-        elif k in (Qt.Key_Minus, Qt.Key_Underscore):
+        elif k in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
             self._zoom_out_all()
-        elif k == Qt.Key_0:
+        elif k == Qt.Key.Key_0:
             self._zoom_reset_all()
         else:
             super().keyPressEvent(event)

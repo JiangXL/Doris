@@ -5,12 +5,12 @@ import os
 
 import pandas as pd
 
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QMainWindow, QTabWidget, QWidget, QMessageBox, QVBoxLayout, QHBoxLayout,
     QPushButton, QToolButton, QMenu, QStackedWidget, QListWidgetItem,
     QInputDialog,
 )
-from PyQt5.QtCore import Qt
+from PyQt6.QtCore import Qt
 
 from doris_dataset import Dataset
 from .tabs import DashboardTab, GroupedTab, StatisticsTab
@@ -202,8 +202,8 @@ class MainWindow(QMainWindow):
         self._dolphin_mode_btn = QToolButton()
         self._dolphin_mode_btn.setText("Mode: Overview Mode")
         self._dolphin_mode_btn.setIcon(GroupedTab._mode_icon())
-        self._dolphin_mode_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self._dolphin_mode_btn.setPopupMode(QToolButton.InstantPopup)
+        self._dolphin_mode_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._dolphin_mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._dolphin_mode_btn.setMenu(menu)
         top.addWidget(self._dolphin_mode_btn)
         self._btn_rename_dph = QPushButton("Rename ID")
@@ -378,7 +378,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self, "Rename ID",
             "确定把所有 DolphinID 重新编号为 Dph001..DphN 吗?")
-        if reply != QMessageBox.Yes:
+        if reply != QMessageBox.StandardButton.Yes:
             return
         order = self._dolphin_tab.current_order()
         try:
