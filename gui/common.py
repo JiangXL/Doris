@@ -522,7 +522,7 @@ class ImageGrid(QListWidget):
         pm = self._drag_pixmap(items)
         drag.setPixmap(pm)
         drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))  # 光标位于图像中心
-        drag.exec_(Qt.DropAction.MoveAction)
+        drag.exec(Qt.DropAction.MoveAction)
 
     @staticmethod
     def _drag_pixmap(items):
@@ -1148,4 +1148,4 @@ class ImageViewerDialog(QDialog):
                 act.triggered.connect(
                     lambda: self._on_misc([self._paths[self._index]]))
         if not menu.isEmpty():
-            menu.exec_(event.globalPos())
+            menu.exec(event.globalPos())

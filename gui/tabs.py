@@ -669,7 +669,7 @@ class GroupedTab(QWidget):
             act.setToolTip("把选中的鳍图移入排除区 (Review/Match 模式均可用)")
             act.triggered.connect(self._exclude_selected)
         if not menu.isEmpty():
-            menu.exec_(pos)
+            menu.exec(pos)
 
     def _mark_best_selected(self):
         """把网格中选中的鳍图标记为该 FinID 的最佳并刷新标注。"""
@@ -707,7 +707,7 @@ class GroupedTab(QWidget):
         act = menu.addAction("Exclude from current FinID (Delete)")
         act.setToolTip("把相似个体的鳍图与当前 FinID 的相似度置 0")
         act.triggered.connect(self._exclude_similar_selected)
-        menu.exec_(pos)
+        menu.exec(pos)
 
     def _exclude_similar_selected(self):
         """Match 模式下: 把左下相似网格中选中的鳍图排除。"""
@@ -748,7 +748,7 @@ class GroupedTab(QWidget):
         menu = QMenu(self)
         act = menu.addAction("Assign DolphinID")
         act.triggered.connect(lambda: self._assign_dolphin_to_fin_id(fin_id))
-        menu.exec_(pos)
+        menu.exec(pos)
 
     def _assign_dolphin_to_fin_id(self, fin_id):
         """调用外部 dolphin_assigner 并刷新界面。"""

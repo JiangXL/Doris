@@ -162,7 +162,7 @@ class DolphinTab(QListWidget):
                 pm.fill(Qt.GlobalColor.lightGray)
             drag.setPixmap(pm)
             drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
-            drag.exec_(Qt.DropAction.MoveAction)
+            drag.exec(Qt.DropAction.MoveAction)
             return
         if not self._press_bottom or dr_fid is None:
             return
@@ -177,7 +177,7 @@ class DolphinTab(QListWidget):
             pm.fill(Qt.GlobalColor.lightGray)
         drag.setPixmap(pm)
         drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
-        drag.exec_(Qt.DropAction.MoveAction)
+        drag.exec(Qt.DropAction.MoveAction)
 
     def dragEnterEvent(self, event):
         # 接受海豚格重排 (DOLPHIN_MIME) 与 DR 鳍交换 (DR_MIME)
@@ -409,7 +409,7 @@ class FinSlot(QLabel):
                     96, Qt.TransformationMode.SmoothTransformation))
             # 只有落点接受拖出 (候选栏/海豚列表) 才算确认不匹配;
             # 拖到空白处松手返回 IgnoreAction, 视为误操作
-            if drag.exec_(Qt.DropAction.MoveAction) != Qt.DropAction.IgnoreAction:
+            if drag.exec(Qt.DropAction.MoveAction) != Qt.DropAction.IgnoreAction:
                 self.dropped_out.emit(self.cls, str(self.fid))
         super().mouseMoveEvent(event)
 
@@ -539,7 +539,7 @@ class CandidateList(QListWidget):
             pm = QPixmap(96, 64)
             pm.fill(Qt.GlobalColor.lightGray)
         drag.setPixmap(pm)
-        drag.exec_(Qt.DropAction.MoveAction)
+        drag.exec(Qt.DropAction.MoveAction)
 
     # -- 双击打开大图查看窗口 --------------------------------------------------
     def mouseDoubleClickEvent(self, event):
