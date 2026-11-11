@@ -15,20 +15,27 @@ from matplotlib import pyplot as plt
 
 from blur_detector_torch import BlurDetector
 from check_duplicate_detections import filter_duplicate_detections
+from resource_paths import resource_path
 
 class FinLocator:
     """背鳍检测与剪裁器"""
     def __init__(
         self,
-        yolo_model_path: str = "models/fin_yolo_3class_PICWD_best.pt",
-        blur_model_path: str = "models/blur_detection_resnet101_final.pth",
+        yolo_model_path: str = None,
+        blur_model_path: str = None,
         iou_threshold: float = 0.5):
         """
         Args:
-            yolo_model_path: YOLO 模型权重路径
-            blur_model_path: 模糊检测模型权重路径
+            yolo_model_path: YOLO 模型权重路径; None 用内置默认权重
+            blur_model_path: 模糊检测模型权重路径; None 用内置默认权重
             iou_threshold: 去重 IOU 阈值
         """
+        if yolo_model_path is None:
+            yolo_model_path = resource_path(
+                os.path.join("models", "fin_yolo_3class_PICWD_best.pt"))
+        if blur_model_path is None:
+            blur_model_path = resource_path(
+                os.path.join("models", "blur_detection_resnet101_final.pth"))
         self.iou_threshold = iou_threshold
         self.fin_detector = YOLO(yolo_model_path, task='detect')
         self.blur_detector = BlurDetector(blur_model_path)

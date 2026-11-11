@@ -16,6 +16,8 @@ import torchvision.transforms as T
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
+from resource_paths import resource_path
+
 
 class FinImageDataset(Dataset):
     """Minimal image dataset driven by a metadata dataframe."""
@@ -41,8 +43,8 @@ class FinFeatureExtractorGeneral:
     # MegaDescriptor-L-384 即 timm 的 swin_large_patch4_window12_384（num_classes=0），
     # 用本地权重加载即可完全离线；如需联网版可传 model_name='hf-hub:BVRA/MegaDescriptor-L-384'
     DEFAULT_MODEL = 'swin_large_patch4_window12_384'
-    DEFAULT_PRETRAINED = 'models/megadescriptor_L_384.pth'  # MegaDescriptor 官方权重（本地）
-    DEFAULT_CHECKPOINT = 'models/megadescriptor_dolphin_ft.pth'
+    DEFAULT_PRETRAINED = resource_path('models/megadescriptor_L_384.pth')  # MegaDescriptor 官方权重（本地）
+    DEFAULT_CHECKPOINT = resource_path('models/megadescriptor_dolphin_ft.pth')
     DEFAULT_IMG_SIZE = 384
     DEFAULT_BATCH_SIZE = 32
     DEFAULT_NUM_WORKERS = 4
