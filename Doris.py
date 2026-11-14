@@ -28,6 +28,9 @@ from gui import MainWindow
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     app = QApplication(sys.argv)
     if len(sys.argv) > 1:
         root = sys.argv[1]

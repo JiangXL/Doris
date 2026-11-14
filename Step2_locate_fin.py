@@ -11,6 +11,7 @@ import cv2
 import pandas as pd
 from tqdm import tqdm
 from ultralytics import YOLO
+import torchvision
 from matplotlib import pyplot as plt
 
 from blur_detector_torch import BlurDetector
@@ -198,8 +199,12 @@ class FinLocator:
 if __name__ == "__main__":
     import sys
     import torch
-    if len(sys.argv) == 2:
-        root_dir = sys.argv[1]
+    import multiprocessing
+    multiprocessing.freeze_support()
+    if len(sys.argv) != 2:
+        print("用法: Step2_locate_fin <照片目录>")
+        sys.exit(1)
+    root_dir = sys.argv[1]
     # 初始化并运行
     locator = FinLocator()
     # 执行批量剪裁

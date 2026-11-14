@@ -4,7 +4,7 @@
 
 # Core data / image processing
 numpy
-pandas=3.1.1
+pandas==3.1.1
 Pillow
 opencv-python
 

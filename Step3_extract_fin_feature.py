@@ -138,6 +138,9 @@ class FinFeatureExtractorGeneral:
 
 if __name__ == '__main__':
     import sys
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     if len(sys.argv) >= 2:
         root_dir = sys.argv[1]
     else:
