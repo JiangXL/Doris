@@ -41,4 +41,9 @@ if __name__ == "__main__":
         root = "demo"
     win = MainWindow(root)
     win.show()
+    try:
+        import pyi_splash
+        pyi_splash.close()
+    except ImportError:
+        pass
     sys.exit(app.exec())

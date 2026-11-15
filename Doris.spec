@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 # torchvision >= 0.25 的扩展名为 _C_stable.so / image_stable.so，
 # 不匹配 PyInstaller 默认的 lib*.so 模式，需显式加宽搜索模式
 _torchvision_libs = collect_dynamic_libs(
-    'torchvision', search_patterns=['*.so', '*.so.*', '*.dll', '*.dylib'])
+    'torchvision', search_patterns=['*.so', '*.so.*', '*.dll', '*.dylib', '*.pyd'])
 
 a = Analysis(
         ['Doris.py'],
@@ -28,10 +28,20 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+splash = Splash(
+    'Delphinus_IAU.png',
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=None,
+    text_size=12,
+    min_time=0,
+    always_on_top=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
-    [],
+    splash,
     exclude_binaries=True,
     name='Doris',
     debug=False,
@@ -47,6 +57,7 @@ exe = EXE(
 )
 coll = COLLECT(
     exe,
+    splash.binaries,
     a.binaries,
     a.datas,
     strip=False,
