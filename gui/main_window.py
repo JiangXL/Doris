@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
 
     def load(self, root):
         self.root = root
+        self.setWindowTitle("Doris v0.2.2 — %s" % root)
         meta_dir = os.path.join(root, "METAINFO")
         self._required_files = {
             "PHOTO_METAINFO.csv": os.path.join(meta_dir, "PHOTO_METAINFO.csv"),
@@ -96,10 +97,6 @@ class MainWindow(QMainWindow):
         # 0. Dashboard 页: 处理流程入口 (参考 dashboard.ui); 选择根目录后重载
         self._dashboard = DashboardTab()
         self._dashboard.root_changed.connect(self.load)
-        self._dashboard.scan_finished.connect(lambda: self.load(self.root))
-        self._dashboard.locate_finished.connect(lambda: self.load(self.root))
-        self._dashboard.filter_finished.connect(lambda: self.load(self.root))
-        self._dashboard.cluster_finished.connect(lambda: self.load(self.root))
         self._dashboard.set_root(root)
         self.tabs.addTab(self._dashboard, "Dashboard")
 

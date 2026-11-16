@@ -64,7 +64,7 @@ class GroupListWidget(QListWidget):
 
     def contextMenuEvent(self, event):
         """右键点击列表项时发出信号; 点击空白处忽略。"""
-        if self.itemAt(event.pos()) is not None:
+        if self.itemAt(event.position().toPoint()) is not None:
             self.right_clicked.emit(event.globalPos())
             event.accept()
         else:
@@ -88,7 +88,7 @@ class GroupListWidget(QListWidget):
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasFormat(MIME_PATHS):
-            self._set_hover(self.itemAt(event.pos()))  # 经过时高亮
+            self._set_hover(self.itemAt(event.position().toPoint()))  # 经过时高亮
             event.setDropAction(Qt.DropAction.MoveAction)
             event.accept()
         else:
@@ -99,7 +99,7 @@ class GroupListWidget(QListWidget):
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
-        item = self.itemAt(event.pos())
+        item = self.itemAt(event.position().toPoint())
         self._set_hover(None)
         if not event.mimeData().hasFormat(MIME_PATHS):
             event.ignore()
@@ -1304,7 +1304,7 @@ class StatisticsTab(QWidget):
 class ClassStepRunner(QThread):
     """在后台线程中执行一个可调用对象，并把 stdout/stderr 重定向到 GUI 日志。
 
-    取代原先的 QProcess + runpy 方案；开发模式与 PyInstaller 打包后均走同进程
+    开发模式与 PyInstaller 打包后均走同进程
     线程，直接实例化 Step*.py 中的类并调用入口方法。
     """
 
@@ -1372,10 +1372,6 @@ class DashboardTab(QWidget):
     所有步骤在后台 QThread 中执行, 运行期间按钮禁用, 结束后恢复并提示。"""
 
     root_changed = pyqtSignal(str)
-    scan_finished = pyqtSignal()
-    locate_finished = pyqtSignal()
-    filter_finished = pyqtSignal()
-    cluster_finished = pyqtSignal()
 
     STEPS = [
         # (按钮文字, 步骤可调用对象, 是否需要先弹出保存对话框)
@@ -1492,12 +1488,12 @@ class DashboardTab(QWidget):
         """Extract Fin Features 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
         if not self._root or not hasattr(self, "_feature_status"):
             return
-        feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES")
+        feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES.npy")
         if not os.path.exists(feat):
             self._feature_status.setText("Wait to Extract")
             self._feature_status.setStyleSheet("color: #d9534f;")
             return
-        self._feature_status.setText("METAINFO/FIN_DEEPFEATURES found")
+        self._feature_status.setText("METAINFO/FIN_DEEPFEATURES.npy found")
         self._feature_status.setStyleSheet("color: #5cb85c;")
 
     def _run_step(self, step_callable, btn):
@@ -1568,18 +1564,12 @@ class DashboardTab(QWidget):
 
     def _step_finished(self, btn, exit_code):
         btn.setEnabled(True)
-        if "Scan Images" in btn.text():
+        if "Scan Photos" in btn.text():
             self._update_scan_status()
-            self.scan_finished.emit()
         if "Locate Fin" in btn.text():
             self._update_fin_status()
-            self.locate_finished.emit()
         if "Extract Fin Features" in btn.text():
             self._update_feature_status()
-        if "Select good quality fin" in btn.text() and exit_code == 0:
-            self.filter_finished.emit()
-        if "Clustering" in btn.text() and exit_code == 0:
-            self.cluster_finished.emit()
         self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
                          color="#5bc0de" if exit_code == 0 else "#ff6b6b")
         QMessageBox.information(self, "Doris", "%s 已结束 (exit code %d)"

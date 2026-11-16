@@ -471,7 +471,7 @@ class ImageGrid(QListWidget):
         paths = [p for p in paths if p]
         if paths:
             self.paths_dropped.emit(paths)
-            item = self.itemAt(event.pos())
+            item = self.itemAt(event.position().toPoint())
             if item is not None:
                 self.paths_dropped_on.emit(paths, item.data(Qt.ItemDataRole.UserRole))
             event.setDropAction(Qt.DropAction.MoveAction)
@@ -486,7 +486,7 @@ class ImageGrid(QListWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
-            item = self.itemAt(event.pos())
+            item = self.itemAt(event.position().toPoint())
             if item is not None:
                 self.middle_clicked.emit(item.data(Qt.ItemDataRole.UserRole))
                 event.accept()

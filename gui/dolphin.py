@@ -125,7 +125,7 @@ class DolphinTab(QListWidget):
         self._press_top = False
         self._press_bottom = False
         if event.button() == Qt.MouseButton.LeftButton:
-            item = self.itemAt(event.pos())
+            item = self.itemAt(event.position().toPoint())
             if item is not None:
                 r = self.visualItemRect(item)
                 self._press_bottom = event.pos().y() > r.top() + r.height() // 2
@@ -134,7 +134,7 @@ class DolphinTab(QListWidget):
 
     def mouseDoubleClickEvent(self, event):
         """双击鳍图打开大图查看窗口: 上半格看 DL, 下半格看 DR。"""
-        item = self.itemAt(event.pos())
+        item = self.itemAt(event.position().toPoint())
         if item is not None:
             r = self.visualItemRect(item)
             bottom = event.pos().y() > r.top() + r.height() // 2
@@ -203,7 +203,7 @@ class DolphinTab(QListWidget):
             if not src:
                 event.ignore()
                 return
-            item = self.itemAt(event.pos())
+            item = self.itemAt(event.position().toPoint())
             if item is None:
                 self._move_dolphin_to_end(src)
             else:
@@ -223,7 +223,7 @@ class DolphinTab(QListWidget):
         if not src:
             event.ignore()
             return
-        item = self.itemAt(event.pos())
+        item = self.itemAt(event.position().toPoint())
         if item is None:
             # 拖到空白处: 用该海豚的 DR 鳍创建一只新海豚
             self.dr_dropped_on_empty.emit(src)
@@ -380,7 +380,7 @@ class FinSlot(QLabel):
 
     def wheelEvent(self, event):
         self._zoom_to(1.25 if event.angleDelta().y() > 0 else 0.8,
-                      event.pos())
+                      event.position().toPoint())
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.fid is not None:
@@ -543,7 +543,7 @@ class CandidateList(QListWidget):
 
     # -- 双击打开大图查看窗口 --------------------------------------------------
     def mouseDoubleClickEvent(self, event):
-        item = self.itemAt(event.pos())
+        item = self.itemAt(event.position().toPoint())
         if item is not None:
             p = item.data(Qt.ItemDataRole.UserRole + 1)
             if p:
