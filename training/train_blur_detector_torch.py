@@ -3,7 +3,7 @@
 """
 
 import torch
-from blur_detector_torch import train_model, BlurDetector
+from ../blur_detector_torch import train_model, BlurDetector
 
 # 设置 GPU
 if torch.cuda.is_available():
@@ -14,8 +14,8 @@ else:
 
 if __name__ == "__main__":
     # 配置路径
-    TRAIN_DIR = '/home/hf/working/中华白海豚/mydata/PICWD/QinZhou/blur_dataset/train'
-    VAL_DIR = '/home/hf/working/中华白海豚/mydata/PICWD/QinZhou/blur_dataset/val'
+    TRAIN_DIR = '/media/dolhin/PICWD/QinZhou/blur_dataset/train'
+    VAL_DIR = '/media/dolphin/PICWD/QinZhou/blur_dataset/val'
     
     # 训练参数
     EPOCHS = 30

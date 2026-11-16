@@ -11,12 +11,11 @@ import cv2
 import pandas as pd
 from tqdm import tqdm
 from ultralytics import YOLO
-import torchvision
-from matplotlib import pyplot as plt
 
-from blur_detector_torch import BlurDetector
-from check_duplicate_detections import filter_duplicate_detections
 from resource_paths import resource_path
+from blur_detector_torch import BlurDetector
+from fin_aspect_classifier_torch import FinAspectClassifier
+from check_duplicate_detections import filter_duplicate_detections
 
 class FinLocator:
     """背鳍检测与剪裁器"""
@@ -24,11 +23,13 @@ class FinLocator:
         self,
         yolo_model_path: str = None,
         blur_model_path: str = None,
+        aspect_model_path: str = None,
         iou_threshold: float = 0.5):
         """
         Args:
             yolo_model_path: YOLO 模型权重路径; None 用内置默认权重
             blur_model_path: 模糊检测模型权重路径; None 用内置默认权重
+            blur_model_path: 部位检测模型权重路径; None 用内置默认权重
             iou_threshold: 去重 IOU 阈值
         """
         if yolo_model_path is None:
@@ -37,14 +38,18 @@ class FinLocator:
         if blur_model_path is None:
             blur_model_path = resource_path(
                 os.path.join("models", "blur_detection_resnet101_final.pth"))
+        if aspect_model_path is None:
+            aspect_model_path = resource_path(
+                os.path.join("models", "fin_aspect_resnet101_final.pth"))
         self.iou_threshold = iou_threshold
         self.fin_detector = YOLO(yolo_model_path, task='detect')
         self.blur_detector = BlurDetector(blur_model_path)
+        self.aspect_detector = FinAspectClassifier(aspect_model_path)
 
         # initilize DataFrame
         self.fin_info = pd.DataFrame(
             columns=[
-                "Identity", "Path", "Aspect", "CropConf", "XMin",
+                "Identity", "Path", "Aspect", "AspectConf", "Clearness", "CropConf", "XMin",
                 "XMax", "YMin", "YMax",
             ]
         )
@@ -92,7 +97,7 @@ class FinLocator:
                     "PhotoWidth": photo_w,
                     "PhotoHeight": photo_h,
                     "Path": f"FIN/{fin_name}",
-                    "Aspect": fin_class_name,
+                    #"Aspect": fin_class_name,
                     "CropConf": conf,
                     "XMin": x0,
                     "XMax": x1,
@@ -166,8 +171,11 @@ class FinLocator:
                 # 整批裁剪图一次跑模糊检测，避免逐张单样本 ResNet-101 推理
                 if batch_imgs:
                     blur_rets = self.blur_detector.predict_batch(batch_imgs)
-                    for row, ret in zip(batch_rows, blur_rets):
-                        row["Clearness"] = ret["probabilities"]["clear"]
+                    aspect_rets = self.aspect_detector.predict_batch(batch_imgs)
+                    for row, blur_ret, aspect_ret in zip(batch_rows, blur_rets, aspect_rets):
+                        row["Clearness"] = blur_ret["probabilities"]["clear"]
+                        row["Aspect"] = aspect_ret["class"]
+                        row["Aspect_Conf"] = aspect_ret["confidence"]
                 all_rows.extend(batch_rows)
         self.fin_info = pd.DataFrame(all_rows)
         # 生成唯一编号
@@ -175,19 +183,13 @@ class FinLocator:
         self.save_info_to_csv()
 
     def update_meta_info(self):
-        # append ShotID to fin_info TODO: order by PhotoName
+        # append ShotID to fin_info 
         for fin_i in range(len(self.fin_info)):
             PhotoName  = self.fin_info.loc[fin_i, "PhotoName"]
             shot_id = self.photo_info_df.loc[self.photo_info_df["PhotoName"]==PhotoName, 
                                            "ShotID"].values[0]
             self.fin_info.loc[fin_i, "ShotID"] = shot_id
         self.fin_info["ShotID"] = self.fin_info["ShotID"].astype(int)
-        # append fin_count to photo_info
-        for photo_i in range(len(self.photo_info_df)):
-            PhotoName = self.photo_info_df.loc[photo_i, "PhotoName"]
-            fin_count = (self.fin_info["PhotoName"] == PhotoName).sum()
-            self.photo_info_df.loc[photo_i, "FinCount"] = fin_count.astype(int)
-        self.photo_info_df["FinCount"] = self.photo_info_df["FinCount"].astype(int)
 
     def save_info_to_csv(self):
         self.update_meta_info()
