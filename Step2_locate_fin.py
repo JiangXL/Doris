@@ -120,14 +120,22 @@ class FinLocator:
             batch_size: int = 4,
             decode_workers: int = 6,
             prefetch_batches: int = 4,
+            max_inflight_images: int = 128,
         ) :
         """批量检测并剪裁背鳍。
         Args:
             root_dir: 存放原始 *.JPG 的目录
             batch_size: YOLO 推理批大小
             decode_workers: JPEG 解码线程数（cv2.imread 释放 GIL，可多线程并行）
-            prefetch_batches: 预取批数（内存中最多同时存在 prefetch_batches+1 批解码图）
+            prefetch_batches: 预取批数
+            max_inflight_images: 内存中最多同时存在的解码图数量上限，
+                实际的预取批数会被压缩到满足 (prefetch_batches+2)*batch_size <= max_inflight_images
+                （消费当前批时其 future 仍存活，需多留一批的余量）
         """
+        # 预取窗口内全是解码后的全分辨率原图，必须按图像数量上限压缩批数，
+        # 否则大 batch_size * 大 prefetch_batches 会直接耗尽内存
+        prefetch_batches = max(
+            0, min(prefetch_batches, max_inflight_images // batch_size - 2))
         self.root_dir = root_dir
         self.meta_path = os.path.join(root_dir, self.meta_dir)
         self.fin_save_dir = os.path.join(root_dir, "FIN")
@@ -183,12 +191,9 @@ class FinLocator:
         self.save_info_to_csv()
 
     def update_meta_info(self):
-        # append ShotID to fin_info 
-        for fin_i in range(len(self.fin_info)):
-            PhotoName  = self.fin_info.loc[fin_i, "PhotoName"]
-            shot_id = self.photo_info_df.loc[self.photo_info_df["PhotoName"]==PhotoName, 
-                                           "ShotID"].values[0]
-            self.fin_info.loc[fin_i, "ShotID"] = shot_id
+        # append ShotID to fin_info (向量化映射，避免逐行扫描 photo_info_df)
+        shot_id_map = self.photo_info_df.set_index("PhotoName")["ShotID"]
+        self.fin_info["ShotID"] = self.fin_info["PhotoName"].map(shot_id_map)
         self.fin_info["ShotID"] = self.fin_info["ShotID"].astype(int)
 
     def save_info_to_csv(self):
@@ -197,6 +202,13 @@ class FinLocator:
         self.fin_info.to_csv(self.fin_info_csv, index=False)
         self.photo_info_df.to_csv(self.photo_info_csv, index=False)
         print(f"已保存元数据: {self.fin_info_csv}, {self.photo_info_csv}")
+
+    def close(self):
+        """释放分类器内部的线程池等资源。"""
+        for detector in (self.blur_detector, self.aspect_detector):
+            close = getattr(detector, "close", None)
+            if close is not None:
+                close()
 
 if __name__ == "__main__":
     import sys
@@ -216,12 +228,12 @@ if __name__ == "__main__":
         print("Using GPU")
         batch = 64
         decode = int(cpu_num * 0.8)
-        prefetch = 3*cpu_num
+        prefetch = 4
     else: # cpu only
         print("Using CPU")
         batch = int(cpu_num*0.5)
         decode = int(cpu_num*0.5)
-        prefetch = int(cpu_num*0.5)
+        prefetch = 4
     locator.locate_fin(root_dir, batch_size = batch,
             decode_workers = decode,
             prefetch_batches = prefetch)

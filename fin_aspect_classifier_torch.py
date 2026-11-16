@@ -394,7 +394,7 @@ class FinAspectClassifier:
     Fin Aspect 分类器封装类
     """
 
-    def __init__(self, model_path=None, device=None):
+    def __init__(self, model_path=None, device=None, num_workers=8):
         self.input_size = (224, 224)
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.class_names = CLASS_NAMES
@@ -415,6 +415,21 @@ class FinAspectClassifier:
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                std=[0.229, 0.224, 0.225])
         ])
+
+        # 预处理线程池常驻复用，避免每个 batch 反复创建/销毁线程
+        self._pool = ThreadPoolExecutor(max_workers=num_workers) if num_workers > 1 else None
+
+    def close(self):
+        """关闭内部线程池。"""
+        if self._pool is not None:
+            self._pool.shutdown(wait=False)
+            self._pool = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _to_pil(self, image_input):
         """将多种输入类型转换为 PIL Image (RGB)"""
@@ -475,18 +490,18 @@ class FinAspectClassifier:
             }
         }
 
-    def predict_batch(self, image_inputs, num_workers=8):
+    def predict_batch(self, image_inputs, num_workers=None):
         """批量预测
         Args:
             image_inputs: 图像路径/PIL Image/numpy array 的列表
-            num_workers: CPU 预处理线程数（PIL/torch 操作释放 GIL，可并行）
+            num_workers: 已废弃，预处理线程数由构造参数 num_workers 决定，
+                线程池常驻复用（保留此参数仅为兼容旧调用）
         Returns:
             list[dict]: 每张图像的预测结果，格式与 predict() 一致
         """
         # 预处理（PIL 转换 + resize + 归一化）是 CPU 密集操作，多线程并行
-        if num_workers > 1 and len(image_inputs) > 1:
-            with ThreadPoolExecutor(max_workers=num_workers) as pool:
-                images = list(pool.map(lambda item: self.transform(self._to_pil(item)), image_inputs))
+        if self._pool is not None and len(image_inputs) > 1:
+            images = list(self._pool.map(lambda item: self.transform(self._to_pil(item)), image_inputs))
         else:
             images = [self.transform(self._to_pil(item)) for item in image_inputs]
 

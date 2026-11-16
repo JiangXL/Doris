@@ -36,17 +36,18 @@ def _locate_fin(root):
     locator = FinLocator()
     cpu_num = os.cpu_count()
     if torch.cuda.is_available():
-        batch = 64
+        batch = 32
         decode = int(cpu_num * 0.8)
-        prefetch = 3 * cpu_num
+        prefetch = 4
     else:
         batch = int(cpu_num * 0.5)
         decode = int(cpu_num * 0.5)
-        prefetch = int(cpu_num * 0.5)
+        prefetch = 4
     try:
         locator.locate_fin(root, batch_size=batch,
                            decode_workers=decode, prefetch_batches=prefetch)
     finally:
+        locator.close()
         del locator
         _release_gpu()
 
