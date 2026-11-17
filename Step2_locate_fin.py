@@ -50,7 +50,7 @@ class FinLocator:
             jpg_path: 原始 JPG 图像路径
             result: ultralytics 对该图像的检测结果
         Returns:
-            fin_rows: 元数据行列表; Clearness/Aspect 留待 Step3 统一分析
+            fin_rows: 元数据行列表 
         """
         photo_name = os.path.basename(jpg_path)
 

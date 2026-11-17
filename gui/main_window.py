@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Doris v0.2.2 — %s" % root)
         #self.resize(1280, 800)
 
+        self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
         self.tabs = QTabWidget()
         # 切到统计页时惰性重算, 保证任何改组后看到的都是最新数据
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -58,26 +59,41 @@ class MainWindow(QMainWindow):
                     self._rebuild_dolphin_review()
                 cur._needs_refresh = False
 
+    @staticmethod
+    def _stop_thumb_loaders(w):
+        """停掉一个 tab 页上所有缩略图加载线程 (stop + wait), 供重载/退出前调用。
+        findChildren 覆盖所有网格 (含 Fin ID 三栏模式的网格和 Dolphin 页)。"""
+        grids = ([w] if isinstance(w, DolphinTab) else []) \
+            + w.findChildren(ImageGrid) + w.findChildren(DolphinTab) \
+            + w.findChildren(CandidateList)
+        for g in grids:
+            for loader in getattr(g, "_loaders", []):
+                loader.stop()
+        for g in grids:
+            for loader in getattr(g, "_loaders", []):
+                loader.wait(2000)
+
     def closeEvent(self, event):
         # 退出前停掉所有缩略图加载线程, 否则线程在解释器退出时析构会段错误
-        # findChildren 覆盖所有网格 (含 Fin ID 三栏模式的网格和 Dolphin 页)
         for i in range(self.tabs.count()):
-            w = self.tabs.widget(i)
-            grids = ([w] if isinstance(w, DolphinTab) else []) \
-                + w.findChildren(ImageGrid) + w.findChildren(DolphinTab) \
-                + w.findChildren(CandidateList)
-            for g in grids:
-                for loader in getattr(g, "_loaders", []):
-                    loader.stop()
-        for i in range(self.tabs.count()):
-            w = self.tabs.widget(i)
-            grids = ([w] if isinstance(w, DolphinTab) else []) \
-                + w.findChildren(ImageGrid) + w.findChildren(DolphinTab) \
-                + w.findChildren(CandidateList)
-            for g in grids:
-                for loader in getattr(g, "_loaders", []):
-                    loader.wait(2000)
+            self._stop_thumb_loaders(self.tabs.widget(i))
         super().closeEvent(event)
+
+    def _clear_data_tabs(self):
+        """移除并销毁 Dashboard 之外的所有标签页 (停缩略图线程后 deleteLater),
+        为重载数据页做准备; Dashboard (及终端输出) 保留。"""
+        self._tab_requires = {}
+        self._group_tabs = []
+        self._dolphin_tab = None
+        self._dolphin_page = None
+        self._stats_tab = None
+        self._low_quality_tab = None
+        self._low_quality_grid = None
+        for i in range(self.tabs.count() - 1, 0, -1):
+            w = self.tabs.widget(i)
+            self._stop_thumb_loaders(w)
+            self.tabs.removeTab(i)
+            w.deleteLater()
 
     def load(self, root):
         self.root = root
@@ -87,18 +103,22 @@ class MainWindow(QMainWindow):
             "PHOTO_METAINFO.csv": os.path.join(meta_dir, "PHOTO_METAINFO.csv"),
             "FIN_METAINFO.csv": os.path.join(meta_dir, "FIN_METAINFO.csv"),
             "FIN_DEEPFEATURES": os.path.join(meta_dir, "FIN_DEEPFEATURES"),
+            # callable 检查 FIN_METAINFO.csv 是否已有对应列 (各步骤产出):
+            # Analyse Fin -> Aspect/Clearness; Clustering -> FinID/DolphinID
+            "FIN_ANALYSED": lambda: self._fin_has_columns("Aspect", "Clearness"),
+            "FIN_CLUSTERED": lambda: self._fin_has_columns("FinID"),
+            "FIN_DOLPHIN": lambda: self._fin_has_columns("DolphinID"),
         }
-        self._tab_requires = {}  # tab index -> prerequisite key
-        self._group_tabs = []
-        self._dolphin_tab = None
-        self._stats_tab = None
-        self.tabs.clear()
+        self._clear_data_tabs()
 
-        # 0. Dashboard 页: 处理流程入口 (参考 dashboard.ui); 选择根目录后重载
-        self._dashboard = DashboardTab()
-        self._dashboard.root_changed.connect(self.load)
+        # 0. Dashboard 页: 处理流程入口; 常驻不重建,
+        # 重载数据页时终端输出不丢; 流水线步骤成功后经 data_changed 触发重载
+        if self._dashboard is None:
+            self._dashboard = DashboardTab()
+            self._dashboard.root_changed.connect(self.load)
+            self._dashboard.data_changed.connect(lambda: self.load(self.root))
+            self.tabs.addTab(self._dashboard, "Dashboard")
         self._dashboard.set_root(root)
-        self.tabs.addTab(self._dashboard, "Dashboard")
 
         # Dataset 可容忍缺失文件 (空 dataframe), 因此始终创建, 用于初始化各页
         ds = Dataset(root)
@@ -106,8 +126,8 @@ class MainWindow(QMainWindow):
 
         # 1-4. 分组页 (支持拖拽改组: 只更新 dataframe 并写回 CSV, 不动文件)
         shot_boxes = ds.fin_boxes()  # Continuous Shots 页画鳍框
-        fin_tabs = {"Fin Aspect", "Blur", "Fin ID"}  # 鳍图页: 中键查看原图, 叠加 shot_id
-        alt_tabs = {"Fin Aspect", "Blur"}            # 支持 Alt+N 移入第 N 组
+        fin_tabs = {"Fin Aspect", "Fin Quality", "Fin ID"}  # 鳍图页: 中键查看原图, 叠加 shot_id
+        alt_tabs = {"Fin Aspect", "Fin Quality"}            # 支持 Alt+N 移入第 N 组
         shot_labels = ds.fin_shot_labels()  # 鳍图路径 -> shot_id 叠加文字
         photo_labels = ds.photo_shot_labels()  # 原图路径 -> shot_id 叠加文字
         best_marks = ds.fin_best_marks()    # Fin ID 页 "每 shot 最佳" 筛选
@@ -115,7 +135,7 @@ class MainWindow(QMainWindow):
         for title, fn, mover in [
             ("Continuous Shots", ds.shots, ds.move_shot),
             ("Fin Aspect", ds.aspects, ds.move_aspect),
-            ("Blur", ds.blur, ds.move_blur),
+            ("Fin Quality", ds.blur, ds.move_blur),
             ("Fin ID", ds.fin_ids, ds.move_selected_to_fin_id),
         ]:
             tab = GroupedTab(
@@ -167,10 +187,16 @@ class MainWindow(QMainWindow):
                 QListWidgetItem("(no data)", tab.group_list)
             idx = self.tabs.addTab(tab, title)
             self._group_tabs.append((title, tab, fn))
-            # Continuous Shots 依赖原图元数据; 其余三个分组页依赖 FIN_METAINFO.csv
-            self._tab_requires[idx] = ("PHOTO_METAINFO.csv"
-                                       if title == "Continuous Shots"
-                                       else "FIN_METAINFO.csv")
+            # Continuous Shots 依赖原图元数据; Fin Aspect/Fin Quality/Fin ID 还需
+            # "4. Analyse Fin" 完成 (FIN_METAINFO 有 Aspect/Clearness 列)
+            if title == "Continuous Shots":
+                self._tab_requires[idx] = "PHOTO_METAINFO.csv"
+            elif title in ("Fin Aspect", "Fin Quality", "Fin ID"):
+                self._tab_requires[idx] = "FIN_ANALYSED"
+            elif title == "Fin ID":
+                self._tab_requires[idx] = "FIN_CLUSTERED" 
+            else:
+                self._tab_requires[idx] = "FIN_METAINFO.csv"
 
         # 5. 海豚配对页: 每只海豚一格, 上 DL 下 DR, DR 格可拖拽交换;
         #    把 DR 鳍拖到空白处可创建新海豚; 顶栏 "Mode" 图标按钮弹出菜单
@@ -250,7 +276,7 @@ class MainWindow(QMainWindow):
         self._dolphin_page = tab9
         self._dolphin_tab._needs_refresh = False
         self._match_panel._needs_refresh = False
-        self._tab_requires[idx] = "FIN_METAINFO.csv"
+        self._tab_requires[idx] = "FIN_DOLPHIN"  # 需 Clustering 产出 DolphinID
 
         # 6. 社会结构页 (只读): 整组连拍 (shot_id) 内出现多于一个 DolphinID
         #    的 shot, 同一组 DolphinID 的多个 shot 合并为一组 (NN001...),
@@ -270,7 +296,7 @@ class MainWindow(QMainWindow):
             QListWidgetItem("(no data)", tab_social.group_list)
         idx = self.tabs.addTab(tab_social, "Subgroup")
         self._group_tabs.append(("Social Structure", tab_social, ds.social))
-        self._tab_requires[idx] = "FIN_METAINFO.csv"
+        self._tab_requires[idx] = "FIN_DOLPHIN"  # 需 Clustering 产出 DolphinID
 
         # 7. 统计页: FinID 鳍图数柱状图 + 部位占比饼图
         self._stats_tab = StatisticsTab()
@@ -280,7 +306,7 @@ class MainWindow(QMainWindow):
             ds.clearness_values(), ds.dolphin_shot_counts(),
             ds.social_network_data(), ds.traffic_data(), ds.timeline_data())
         idx = self.tabs.addTab(self._stats_tab, "Statistics")
-        self._tab_requires[idx] = "FIN_METAINFO.csv"
+        self._tab_requires[idx] = None  # 统计页常开, 无数据时图表为空
 
         # 8. 低质量页: 列出无鳍或没有 Clear+已分配 DolphinID 的原始照片
         self._low_quality_tab = QWidget()
@@ -290,7 +316,7 @@ class MainWindow(QMainWindow):
         self._low_quality_grid.set_box_editor(self._edit_box)
         lq_lay.addWidget(self._low_quality_grid)
         idx = self.tabs.addTab(self._low_quality_tab, "Low Quality")
-        self._tab_requires[idx] = "FIN_METAINFO.csv"
+        self._tab_requires[idx] = "FIN_CLUSTERED"  # 需 Clustering 产出 FinID
         self._low_quality_tab._needs_refresh = False
         self._rebuild_low_quality()
 
@@ -299,10 +325,24 @@ class MainWindow(QMainWindow):
 
     def _refresh_tab_enablement(self):
         """根据 METAINFO 下文件是否存在, 启用或禁用各标签页。"""
-        available = {k: os.path.isfile(v)
+        available = {k: (v() if callable(v) else os.path.isfile(v))
                      for k, v in getattr(self, "_required_files", {}).items()}
         for idx, req in getattr(self, "_tab_requires", {}).items():
-            self.tabs.setTabEnabled(idx, available.get(req, False))
+            # req 为 None 表示常开 (统计页)
+            enabled = True if req is None else available.get(req, False)
+            self.tabs.setTabEnabled(idx, enabled)
+
+    def _fin_has_columns(self, *cols):
+        """FIN_METAINFO.csv 是否存在且含指定列 (Analyse Fin 产出 Aspect/Clearness,
+        Clustering 产出 FinID/DolphinID; 列缺失说明对应步骤未完成)。"""
+        csv = os.path.join(self.root, "METAINFO", "FIN_METAINFO.csv")
+        if not os.path.isfile(csv):
+            return False
+        try:
+            header = pd.read_csv(csv, nrows=0).columns
+        except Exception:
+            return False
+        return all(c in header for c in cols)
 
 
     def _set_dolphin_mode(self, mode):

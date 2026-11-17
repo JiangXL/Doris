@@ -142,6 +142,7 @@ class Dataset:
             self._cache[key] = boxes
             return boxes
         has_fid = "FinID" in self.fin_df.columns
+        has_asp = "Aspect" in self.fin_df.columns
         has_cle = "Clearness" in self.fin_df.columns
         has_conf = "CropConf" in self.fin_df.columns
         has_dph = dolphin_id and "DolphinID" in self.fin_df.columns
@@ -165,6 +166,8 @@ class Dataset:
             if not os.path.isfile(p):
                 continue
             fids = g["FinID"] if has_fid else [None] * len(g)
+            # Locate Fin 后 Analyse Fin 之前没有 Aspect 列, 用空串画无色别框
+            asps = g["Aspect"] if has_asp else [""] * len(g)
             cles = g["Clearness"] if has_cle else [None] * len(g)
             confs = g["CropConf"] if has_conf else [None] * len(g)
             dphs = g["DolphinID"] if has_dph else [None] * len(g)
@@ -175,7 +178,7 @@ class Dataset:
                  extra(fid, cle, conf, dph))
                 for a, b, c, d, cls, fid, cle, conf, dph in zip(
                     g["XMin"], g["YMin"], g["XMax"], g["YMax"],
-                    g["Aspect"], fids, cles, confs, dphs)]
+                    asps, fids, cles, confs, dphs)]
         self._cache[key] = boxes
         return boxes
 
@@ -307,7 +310,9 @@ class Dataset:
     #  Fin Aspect 鳍侧分组
     def aspects(self):
         groups = {label: [] for label in ASPECT_LABELS.values()}  # 空组也列出, 作为拖放目标
-        if self.fin_df.empty or "fullpath" not in self.fin_df.columns:
+        if self.fin_df.empty or "fullpath" not in self.fin_df.columns \
+                or "Aspect" not in self.fin_df.columns:
+            # Analyse Fin 之前没有 Aspect 列, 只保留空组作为拖放目标
             return groups
         df = self.fin_df.dropna(subset=["fullpath"])
         for cls, g in df.groupby("Aspect"):
@@ -1698,7 +1703,7 @@ class Dataset:
             "CropConf": float(crop_conf),
             "BestInShot": False,
             "BestInFin": False,
-            "Clear": pd.NA,
+            "Clear": True,
             "DolphinID": pd.NA,
             "TrackIDInShot": pd.NA,
         })

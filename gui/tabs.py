@@ -25,24 +25,285 @@ from .common import (
     ImageGrid, ThumbLoader, MIME_PATHS, THUMB_SIZE,
     ZoomableView, ImageViewerDialog,
 )
-from .dolphin import DolphinTab, MatchPanel
+
 from .steps import (
     _scan_photos, _locate_fin, _extract_features,
     _cluster, _export_database, _export_pptx,
 )
 
-def _wrap_text(s, width=34):
-    """手动按宽度断行(优先在逗号/空格后断开), 避免依赖视图换行设置。"""
-    lines, cur = [], ""
-    for ch in s:
-        cur += ch
-        if (len(cur) >= width and ch in ", ]") or len(cur) >= width + 12:
-            lines.append(cur)
-            cur = ""
-    if cur:
-        lines.append(cur)
-    return "\n".join(lines)
 
+class ClassStepRunner(QThread):
+    """在后台线程中执行一个可调用对象，并把 stdout/stderr 重定向到 GUI 日志。
+
+    直接实例化 Step*.py 中的类并调用入口方法。
+    """
+
+    log_text = pyqtSignal(str, object)
+    finished_with_code = pyqtSignal(int)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self.fn = fn
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _capture_streams(emit):
+        class _EmitStream:
+            def __init__(self, emit, color=None):
+                self.emit = emit
+                self.color = color
+                self._buffer = ""
+
+            def write(self, s):
+                if not s:
+                    return
+                self._buffer += s
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    self.emit(line, self.color)
+
+            def flush(self):
+                if self._buffer:
+                    self.emit(self._buffer, self.color)
+                    self._buffer = ""
+
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        sys.stdout = _EmitStream(emit)
+        sys.stderr = _EmitStream(emit, "#ff6b6b")
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+    def run(self):
+        exit_code = 0
+        try:
+            with self._capture_streams(self.log_text.emit):
+                self.fn()
+        except SystemExit as e:
+            exit_code = e.code if isinstance(e.code, int) else 0
+        except Exception as e:
+            self.log_text.emit(str(e), "#ff6b6b")
+            exit_code = 1
+        self.finished_with_code.emit(exit_code)
+
+# ---------------------------------------------------------------------------
+# Dashboard 页
+# ---------------------------------------------------------------------------
+class DashboardTab(QWidget):
+    """Dashboard 页: 处理流程入口
+
+    按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
+    其余按钮直接实例化 Step*.py 中的类并调用入口方法 (扫描 / 切鳍 /
+    提特征 / 聚类 / 导出数据库 / 导出 Dolphin Overview PPT)。
+    所有步骤在后台 QThread 中执行, 运行期间按钮禁用, 结束后恢复并提示。"""
+
+    root_changed = pyqtSignal(str)
+    # Scan Photos / Locate Fin / Analyse Fin / Clustering 成功后发出,
+    # 由主窗口重载数据页 (Dashboard 本身保留, 终端输出不丢)
+    data_changed = pyqtSignal()
+
+    STEPS = [
+        # (按钮文字, 步骤可调用对象, 是否需要先弹出保存对话框)
+        ("2. Scan Photos", _scan_photos, False),
+        ("3. Locate Fin", _locate_fin, False),
+        ("4. Analyse Fin", _extract_features, False),
+        ("5. Cluster Fin", _cluster, False),
+        ("6. Export Database", _export_database, False),
+        ("7. Export Dolphin Overview PPT", _export_pptx, True),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root = None
+        grid = QGridLayout()
+        grid.setColumnStretch(1, 1)
+        btn_root = QPushButton("1.  Set Root Folder")
+        btn_root.clicked.connect(self._pick_root)
+        grid.addWidget(btn_root, 0, 0)
+        self.root_label = QLabel("(未设置)")
+        self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        grid.addWidget(self.root_label, 0, 1)
+        for i, (text, step_callable, save_dialog) in enumerate(self.STEPS, 1):
+            btn = QPushButton(text)
+            if save_dialog:
+                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
+                                    self._run_step_with_save_dialog(c, b))
+            else:
+                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
+                                    self._run_step(c, b))
+            grid.addWidget(btn, i, 0)
+            if i == 1:  # Scan Images 右侧显示 PHOTO_METAINFO 状态
+                self._scan_status = QLabel()
+                grid.addWidget(self._scan_status, i, 1)
+            if i == 2:  # Locate Fin 右侧显示 FIN_METAINFO 状态
+                self._fin_status = QLabel()
+                grid.addWidget(self._fin_status, i, 1)
+            if i == 3:  # Analyse Fin 右侧显示 FIN_DEEPFEATURES 状态
+                self._feature_status = QLabel()
+                grid.addWidget(self._feature_status, i, 1)
+        # 底部终端式日志: 显示各步骤的 stdout/stderr
+        self._log = QPlainTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setFont(QFont("Consolas", 9))
+        self._log.setStyleSheet(
+            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
+            "border: 1px solid #3c3c3c; }")
+        self._log.setMaximumBlockCount(500)
+        self._log.setPlaceholderText("步骤输出将显示在这里...")
+        lay = QVBoxLayout(self)
+        lay.addLayout(grid)
+        lay.addWidget(self._log, stretch=1)
+        lay.setStretchFactor(self._log, 1)
+
+    def set_root(self, root):
+        """主窗口加载/切换根目录后同步显示; 同时刷新各步骤状态标签。"""
+        self._root = root
+        self.root_label.setText(root)
+        self._update_scan_status()
+        self._update_fin_status()
+        self._update_feature_status()
+
+    def _pick_root(self):
+        """弹出非原生目录选择对话框, 避免某些平台下原生对话框点击"打开"不关闭的问题。"""
+        dlg = QFileDialog(self, "选择 PHOTO 根目录", self._root or "")
+        dlg.setFileMode(QFileDialog.FileMode.Directory)
+        dlg.setOption(QFileDialog.Option.DontUseNativeDialog)
+        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            files = dlg.selectedFiles()
+            if files:
+                self.root_changed.emit(files[0])
+
+    def _update_scan_status(self):
+        """Scan Images 按钮右侧: 显示 PHOTO_METAINFO.csv 是否存在及图片数量。"""
+        if not self._root or not hasattr(self, "_scan_status"):
+            return
+        csv = os.path.join(self._root, "METAINFO", "PHOTO_METAINFO.csv")
+        if not os.path.isfile(csv):
+            self._scan_status.setText("Wait to Scan")
+            self._scan_status.setStyleSheet("color: #d9534f;")
+            return
+        try:
+            n = len(pd.read_csv(csv))
+            self._scan_status.setText(
+                "METAINFO/PHOTO_METAINFO.csv found, %d photos" % n)
+            self._scan_status.setStyleSheet("color: #5cb85c;")
+        except Exception:
+            self._scan_status.setText("METAINFO/PHOTO_METAINFO.csv found")
+            self._scan_status.setStyleSheet("color: #5cb85c;")
+
+    def _update_fin_status(self):
+        """Locate Fin 按钮右侧: 显示 FIN_METAINFO.csv 是否存在及鳍图数量。"""
+        if not self._root or not hasattr(self, "_fin_status"):
+            return
+        csv = os.path.join(self._root, "METAINFO", "FIN_METAINFO.csv")
+        if not os.path.isfile(csv):
+            self._fin_status.setText("Wait to Locate")
+            self._fin_status.setStyleSheet("color: #d9534f;")
+            return
+        try:
+            n = len(pd.read_csv(csv))
+            self._fin_status.setText(
+                "METAINFO/FIN_METAINFO.csv found, %d fin images" % n)
+            self._fin_status.setStyleSheet("color: #5cb85c;")
+        except Exception:
+            self._fin_status.setText("METAINFO/FIN_METAINFO.csv found")
+            self._fin_status.setStyleSheet("color: #5cb85c;")
+
+    def _update_feature_status(self):
+        """Analyse Fin 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
+        if not self._root or not hasattr(self, "_feature_status"):
+            return
+        feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES.npy")
+        if not os.path.exists(feat):
+            self._feature_status.setText("Wait to Extract")
+            self._feature_status.setStyleSheet("color: #d9534f;")
+            return
+        self._feature_status.setText("METAINFO/FIN_DEEPFEATURES.npy found")
+        self._feature_status.setStyleSheet("color: #5cb85c;")
+
+    def _run_step(self, step_callable, btn):
+        """在后台线程中直接调用步骤可调用对象 (传入当前根目录)。"""
+        self._start_step(step_callable, btn, [self._root])
+
+    def _run_step_with_save_dialog(self, step_callable, btn):
+        """弹出保存对话框并把选中的路径作为额外参数传给步骤。"""
+        if not self._root:
+            QMessageBox.warning(self, "Doris",
+                                "请先通过 \"1. Set Root Folder\" 设置根目录")
+            return
+        default = os.path.join(self._root, "EXPORT", "dolphin_overview.pptx")
+        out, _ = QFileDialog.getSaveFileName(
+            self, "导出 Dolphin Overview 到 PPT", default,
+            "PowerPoint (*.pptx)")
+        if not out:
+            return
+        self._start_step(step_callable, btn, [self._root, out])
+
+    def _append_log(self, text, color=None):
+        """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。"""
+        if not text:
+            return
+        for line in text.rstrip("\n").split("\n"):
+            stamp = datetime.now().strftime("%H:%M:%S")
+            if color:
+                self._log.appendHtml('<span style="color:%s">[%s] %s</span>'
+                                     % (color, stamp, line))
+            else:
+                self._log.appendPlainText("[%s] %s" % (stamp, line))
+
+    def _start_step(self, step_callable, btn, args):
+        """启动步骤, args 为传给可调用对象的参数列表。
+
+        在后台 QThread 中实例化类并调用方法。
+        """
+        if not self._root:
+            QMessageBox.warning(self, "Doris",
+                                "请先通过 \"1. Set Root Folder\" 设置根目录")
+            return
+        self._append_log("启动 %s ..." % btn.text())
+        btn.setEnabled(False)
+        self._set_status_running(btn.text())
+
+        def _run():
+            step_callable(*args)
+
+        runner = ClassStepRunner(_run, self)
+        runner.log_text.connect(self._append_log)
+        runner.finished_with_code.connect(
+            lambda code, b=btn: self._step_finished(b, code))
+        runner.finished.connect(runner.deleteLater)
+        runner.start()
+
+    def _set_status_running(self, btn_text):
+        """根据正在运行的步骤, 把右侧状态标签设为 Scanning/Locating/Extracting。"""
+        if "Scan Photos" in btn_text:
+            self._scan_status.setText("Scanning")
+            self._scan_status.setStyleSheet("color: #f0ad4e;")
+        elif "Locate Fin" in btn_text:
+            self._fin_status.setText("Locating")
+            self._fin_status.setStyleSheet("color: #f0ad4e;")
+        elif "Analyse Fin" in btn_text:
+            self._feature_status.setText("Analysing")
+            self._feature_status.setStyleSheet("color: #f0ad4e;")
+
+    def _step_finished(self, btn, exit_code):
+        btn.setEnabled(True)
+        if "Scan Photos" in btn.text():
+            self._update_scan_status()
+        if "Locate Fin" in btn.text():
+            self._update_fin_status()
+        if "Analyse Fin" in btn.text():
+            self._update_feature_status()
+        self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
+                         color="#5bc0de" if exit_code == 0 else "#ff6b6b")
+        if exit_code == 0 and any(k in btn.text() for k in
+                                  ("Scan Photos", "Locate Fin",
+                                   "Analyse Fin", "Cluster Fin")):
+            self.data_changed.emit()
 
 class GroupListWidget(QListWidget):
     """侧边分组列表, 接受从网格拖来的图片路径。
@@ -1301,275 +1562,4 @@ class StatisticsTab(QWidget):
         self._timeline(self.fig_timeline, timeline_data)
 
 
-class ClassStepRunner(QThread):
-    """在后台线程中执行一个可调用对象，并把 stdout/stderr 重定向到 GUI 日志。
 
-    开发模式与 PyInstaller 打包后均走同进程
-    线程，直接实例化 Step*.py 中的类并调用入口方法。
-    """
-
-    log_text = pyqtSignal(str, object)
-    finished_with_code = pyqtSignal(int)
-
-    def __init__(self, fn, parent=None):
-        super().__init__(parent)
-        self.fn = fn
-
-    @staticmethod
-    @contextlib.contextmanager
-    def _capture_streams(emit):
-        class _EmitStream:
-            def __init__(self, emit, color=None):
-                self.emit = emit
-                self.color = color
-                self._buffer = ""
-
-            def write(self, s):
-                if not s:
-                    return
-                self._buffer += s
-                while "\n" in self._buffer:
-                    line, self._buffer = self._buffer.split("\n", 1)
-                    self.emit(line, self.color)
-
-            def flush(self):
-                if self._buffer:
-                    self.emit(self._buffer, self.color)
-                    self._buffer = ""
-
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        sys.stdout = _EmitStream(emit)
-        sys.stderr = _EmitStream(emit, "#ff6b6b")
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-
-    def run(self):
-        exit_code = 0
-        try:
-            with self._capture_streams(self.log_text.emit):
-                self.fn()
-        except SystemExit as e:
-            exit_code = e.code if isinstance(e.code, int) else 0
-        except Exception as e:
-            self.log_text.emit(str(e), "#ff6b6b")
-            exit_code = 1
-        self.finished_with_code.emit(exit_code)
-
-
-# ---------------------------------------------------------------------------
-# Dashboard 页
-# ---------------------------------------------------------------------------
-class DashboardTab(QWidget):
-    """Dashboard 页: 处理流程入口
-
-    按钮 1 选择根目录 (发射 root_changed, 由主窗口重载);
-    其余按钮直接实例化 Step*.py 中的类并调用入口方法 (扫描 / 切鳍 /
-    提特征 / 聚类 / 导出数据库 / 导出 Dolphin Overview PPT)。
-    所有步骤在后台 QThread 中执行, 运行期间按钮禁用, 结束后恢复并提示。"""
-
-    root_changed = pyqtSignal(str)
-
-    STEPS = [
-        # (按钮文字, 步骤可调用对象, 是否需要先弹出保存对话框)
-        ("2. Scan Photos", _scan_photos, False),
-        ("3. Locate Fin", _locate_fin, False),
-        ("4. Analyse Fin", _extract_features, False),
-        ("5. Clustering", _cluster, False),
-        ("6. Export Database", _export_database, False),
-        ("7. Export Dolphin Overview PPT", _export_pptx, True),
-    ]
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._root = None
-        grid = QGridLayout()
-        grid.setColumnStretch(1, 1)
-        btn_root = QPushButton("1.  Set Root Folder")
-        btn_root.clicked.connect(self._pick_root)
-        grid.addWidget(btn_root, 0, 0)
-        self.root_label = QLabel("(未设置)")
-        self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        grid.addWidget(self.root_label, 0, 1)
-        for i, (text, step_callable, save_dialog) in enumerate(self.STEPS, 1):
-            btn = QPushButton(text)
-            if save_dialog:
-                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
-                                    self._run_step_with_save_dialog(c, b))
-            else:
-                btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
-                                    self._run_step(c, b))
-            grid.addWidget(btn, i, 0)
-            if i == 1:  # Scan Images 右侧显示 PHOTO_METAINFO 状态
-                self._scan_status = QLabel()
-                grid.addWidget(self._scan_status, i, 1)
-            if i == 2:  # Locate Fin 右侧显示 FIN_METAINFO 状态
-                self._fin_status = QLabel()
-                grid.addWidget(self._fin_status, i, 1)
-            if i == 3:  # Analyse Fin 右侧显示 FIN_DEEPFEATURES 状态
-                self._feature_status = QLabel()
-                grid.addWidget(self._feature_status, i, 1)
-        # 底部终端式日志: 显示各步骤的 stdout/stderr
-        self._log = QPlainTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setFont(QFont("Consolas", 9))
-        self._log.setStyleSheet(
-            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
-            "border: 1px solid #3c3c3c; }")
-        self._log.setMaximumBlockCount(500)
-        self._log.setPlaceholderText("步骤输出将显示在这里...")
-        lay = QVBoxLayout(self)
-        lay.addLayout(grid)
-        lay.addWidget(self._log, stretch=1)
-        lay.setStretchFactor(self._log, 1)
-
-    def set_root(self, root):
-        """主窗口加载/切换根目录后同步显示; 同时刷新各步骤状态标签。"""
-        self._root = root
-        self.root_label.setText(root)
-        self._update_scan_status()
-        self._update_fin_status()
-        self._update_feature_status()
-
-    def _pick_root(self):
-        """弹出非原生目录选择对话框, 避免某些平台下原生对话框点击"打开"不关闭的问题。"""
-        dlg = QFileDialog(self, "选择 PHOTO 根目录", self._root or "")
-        dlg.setFileMode(QFileDialog.FileMode.Directory)
-        dlg.setOption(QFileDialog.Option.DontUseNativeDialog)
-        dlg.setOption(QFileDialog.Option.ShowDirsOnly, True)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            files = dlg.selectedFiles()
-            if files:
-                self.root_changed.emit(files[0])
-
-    def _update_scan_status(self):
-        """Scan Images 按钮右侧: 显示 PHOTO_METAINFO.csv 是否存在及图片数量。"""
-        if not self._root or not hasattr(self, "_scan_status"):
-            return
-        csv = os.path.join(self._root, "METAINFO", "PHOTO_METAINFO.csv")
-        if not os.path.isfile(csv):
-            self._scan_status.setText("Wait to Scan")
-            self._scan_status.setStyleSheet("color: #d9534f;")
-            return
-        try:
-            import pandas as pd
-            n = len(pd.read_csv(csv))
-            self._scan_status.setText(
-                "METAINFO/PHOTO_METAINFO.csv found, %d photos" % n)
-            self._scan_status.setStyleSheet("color: #5cb85c;")
-        except Exception:
-            self._scan_status.setText("METAINFO/PHOTO_METAINFO.csv found")
-            self._scan_status.setStyleSheet("color: #5cb85c;")
-
-    def _update_fin_status(self):
-        """Locate Fin 按钮右侧: 显示 FIN_METAINFO.csv 是否存在及鳍图数量。"""
-        if not self._root or not hasattr(self, "_fin_status"):
-            return
-        csv = os.path.join(self._root, "METAINFO", "FIN_METAINFO.csv")
-        if not os.path.isfile(csv):
-            self._fin_status.setText("Wait to Locate")
-            self._fin_status.setStyleSheet("color: #d9534f;")
-            return
-        try:
-            import pandas as pd
-            n = len(pd.read_csv(csv))
-            self._fin_status.setText(
-                "METAINFO/FIN_METAINFO.csv found, %d fin images" % n)
-            self._fin_status.setStyleSheet("color: #5cb85c;")
-        except Exception:
-            self._fin_status.setText("METAINFO/FIN_METAINFO.csv found")
-            self._fin_status.setStyleSheet("color: #5cb85c;")
-
-    def _update_feature_status(self):
-        """Analyse Fin 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
-        if not self._root or not hasattr(self, "_feature_status"):
-            return
-        feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES.npy")
-        if not os.path.exists(feat):
-            self._feature_status.setText("Wait to Extract")
-            self._feature_status.setStyleSheet("color: #d9534f;")
-            return
-        self._feature_status.setText("METAINFO/FIN_DEEPFEATURES.npy found")
-        self._feature_status.setStyleSheet("color: #5cb85c;")
-
-    def _run_step(self, step_callable, btn):
-        """在后台线程中直接调用步骤可调用对象 (传入当前根目录)。"""
-        self._start_step(step_callable, btn, [self._root])
-
-    def _run_step_with_save_dialog(self, step_callable, btn):
-        """弹出保存对话框并把选中的路径作为额外参数传给步骤。"""
-        if not self._root:
-            QMessageBox.warning(self, "Doris",
-                                "请先通过 \"1. Set Root Folder\" 设置根目录")
-            return
-        default = os.path.join(self._root, "EXPORT", "dolphin_overview.pptx")
-        out, _ = QFileDialog.getSaveFileName(
-            self, "导出 Dolphin Overview 到 PPT", default,
-            "PowerPoint (*.pptx)")
-        if not out:
-            return
-        self._start_step(step_callable, btn, [self._root, out])
-
-    def _append_log(self, text, color=None):
-        """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。"""
-        if not text:
-            return
-        from datetime import datetime
-        for line in text.rstrip("\n").split("\n"):
-            stamp = datetime.now().strftime("%H:%M:%S")
-            if color:
-                self._log.appendHtml('<span style="color:%s">[%s] %s</span>'
-                                     % (color, stamp, line))
-            else:
-                self._log.appendPlainText("[%s] %s" % (stamp, line))
-
-    def _start_step(self, step_callable, btn, args):
-        """启动步骤, args 为传给可调用对象的参数列表。
-
-        直接在后台 QThread 中实例化类并调用方法, 无需 QProcess 或 runpy。
-        """
-        if not self._root:
-            QMessageBox.warning(self, "Doris",
-                                "请先通过 \"1. Set Root Folder\" 设置根目录")
-            return
-        self._append_log("启动 %s ..." % btn.text())
-        btn.setEnabled(False)
-        self._set_status_running(btn.text())
-
-        def _run():
-            step_callable(*args)
-
-        runner = ClassStepRunner(_run, self)
-        runner.log_text.connect(self._append_log)
-        runner.finished_with_code.connect(
-            lambda code, b=btn: self._step_finished(b, code))
-        runner.finished.connect(runner.deleteLater)
-        runner.start()
-
-    def _set_status_running(self, btn_text):
-        """根据正在运行的步骤, 把右侧状态标签设为 Scanning/Locating/Extracting。"""
-        if "Scan Photos" in btn_text:
-            self._scan_status.setText("Scanning")
-            self._scan_status.setStyleSheet("color: #f0ad4e;")
-        elif "Locate Fin" in btn_text:
-            self._fin_status.setText("Locating")
-            self._fin_status.setStyleSheet("color: #f0ad4e;")
-        elif "Analyse Fin" in btn_text:
-            self._feature_status.setText("Analysing")
-            self._feature_status.setStyleSheet("color: #f0ad4e;")
-
-    def _step_finished(self, btn, exit_code):
-        btn.setEnabled(True)
-        if "Scan Photos" in btn.text():
-            self._update_scan_status()
-        if "Locate Fin" in btn.text():
-            self._update_fin_status()
-        if "Analyse Fin" in btn.text():
-            self._update_feature_status()
-        self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
-                         color="#5bc0de" if exit_code == 0 else "#ff6b6b")
-        QMessageBox.information(self, "Doris", "%s 已结束 (exit code %d)"
-                                % (btn.text(), exit_code))
