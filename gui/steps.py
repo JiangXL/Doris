@@ -47,27 +47,28 @@ def _locate_fin(root):
         locator.locate_fin(root, batch_size=batch,
                            decode_workers=decode, prefetch_batches=prefetch)
     finally:
-        locator.close()
         del locator
         _release_gpu()
 
 
 def _extract_features(root):
-    from Step3_extract_fin_feature import FinFeatureExtractorGeneral
+    from Step3_extract_fin_feature import (
+        FinDeepFeatureExtractor, FinQualityAspectAnalyser)
 
-    extractor = FinFeatureExtractorGeneral()
+    analyser = FinQualityAspectAnalyser()
+    try:
+        analyser.analyse(root)
+    finally:
+        analyser.close()
+        del analyser
+        _release_gpu()
+
+    extractor = FinDeepFeatureExtractor()
     try:
         extractor.extract(root)
     finally:
         del extractor
         _release_gpu()
-
-
-def _filter_quality(root):
-    from Step4_filter_low_quality import FinQualityFilter
-
-    filter_obj = FinQualityFilter(root_dir=root)
-    filter_obj.auto_filter()
 
 
 def _cluster(root):

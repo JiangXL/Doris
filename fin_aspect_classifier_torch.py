@@ -397,6 +397,7 @@ class FinAspectClassifier:
     def __init__(self, model_path=None, device=None, num_workers=8):
         self.input_size = (224, 224)
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print("Use", self.device)
         self.class_names = CLASS_NAMES
 
         # 创建模型
@@ -404,7 +405,9 @@ class FinAspectClassifier:
 
         if model_path and os.path.exists(model_path):
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-            print(f"已加载模型: {model_path}")
+            print(f"Load Aspect model: {model_path}")
+        else:
+            print(f"Aspect model isn't not valid: {model_path}")
 
         self.model.eval()
 

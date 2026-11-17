@@ -28,7 +28,7 @@ from .common import (
 from .dolphin import DolphinTab, MatchPanel
 from .steps import (
     _scan_photos, _locate_fin, _extract_features,
-    _filter_quality, _cluster, _export_database, _export_pptx,
+    _cluster, _export_database, _export_pptx,
 )
 
 def _wrap_text(s, width=34):
@@ -1377,11 +1377,10 @@ class DashboardTab(QWidget):
         # (按钮文字, 步骤可调用对象, 是否需要先弹出保存对话框)
         ("2. Scan Photos", _scan_photos, False),
         ("3. Locate Fin", _locate_fin, False),
-        ("4. Extract Fin Features", _extract_features, False),
-        ("5. Select good quality fin", _filter_quality, False),
-        ("6. Clustering", _cluster, False),
-        ("7. Export Database", _export_database, False),
-        ("8. Export Dolphin Overview PPT", _export_pptx, True),
+        ("4. Analyse Fin", _extract_features, False),
+        ("5. Clustering", _cluster, False),
+        ("6. Export Database", _export_database, False),
+        ("7. Export Dolphin Overview PPT", _export_pptx, True),
     ]
 
     def __init__(self, parent=None):
@@ -1410,7 +1409,7 @@ class DashboardTab(QWidget):
             if i == 2:  # Locate Fin 右侧显示 FIN_METAINFO 状态
                 self._fin_status = QLabel()
                 grid.addWidget(self._fin_status, i, 1)
-            if i == 3:  # Extract Fin Features 右侧显示 FIN_DEEPFEATURES 状态
+            if i == 3:  # Analyse Fin 右侧显示 FIN_DEEPFEATURES 状态
                 self._feature_status = QLabel()
                 grid.addWidget(self._feature_status, i, 1)
         # 底部终端式日志: 显示各步骤的 stdout/stderr
@@ -1485,7 +1484,7 @@ class DashboardTab(QWidget):
             self._fin_status.setStyleSheet("color: #5cb85c;")
 
     def _update_feature_status(self):
-        """Extract Fin Features 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
+        """Analyse Fin 按钮右侧: 显示 FIN_DEEPFEATURES 是否存在。"""
         if not self._root or not hasattr(self, "_feature_status"):
             return
         feat = os.path.join(self._root, "METAINFO", "FIN_DEEPFEATURES.npy")
@@ -1558,8 +1557,8 @@ class DashboardTab(QWidget):
         elif "Locate Fin" in btn_text:
             self._fin_status.setText("Locating")
             self._fin_status.setStyleSheet("color: #f0ad4e;")
-        elif "Extract Fin Features" in btn_text:
-            self._feature_status.setText("Extracting")
+        elif "Analyse Fin" in btn_text:
+            self._feature_status.setText("Analysing")
             self._feature_status.setStyleSheet("color: #f0ad4e;")
 
     def _step_finished(self, btn, exit_code):
@@ -1568,7 +1567,7 @@ class DashboardTab(QWidget):
             self._update_scan_status()
         if "Locate Fin" in btn.text():
             self._update_fin_status()
-        if "Extract Fin Features" in btn.text():
+        if "Analyse Fin" in btn.text():
             self._update_feature_status()
         self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
                          color="#5bc0de" if exit_code == 0 else "#ff6b6b")

@@ -16,6 +16,7 @@ a = Analysis(
     datas=[
         ('models/fin_yolo_3class_PICWD_best.pt', 'models'),
         ('models/blur_detection_resnet101_final.pth', 'models'),
+        ('models/fin_aspect_resnet101_final.pth', 'models'),
         ('models/megadescriptor_dolphin_ft.pth', 'models'),
     ], 
     hiddenimports=[
@@ -23,11 +24,11 @@ a = Analysis(
         'Step1b_analyse_photo_jitter',
         'Step2_locate_fin',
         'Step3_extract_fin_feature',
-        'Step4_filter_low_quality',
         'Step5_sort_fin_automatic',
         'Step6a_export_database',
         'Step6b_export_pptx',
         'blur_detector_torch',
+        'fin_aspect_classifier_torch',
         'check_duplicate_detections',
         'KalmanBoxTracker',
         'resource_paths',

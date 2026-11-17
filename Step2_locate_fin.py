@@ -1,6 +1,6 @@
 # coding: utf-8
 """从海豚原始相片识别并剪裁背鳍图像
-使用训练后的 YOLO 模型检测背鳍，使用模糊检测模型评估清晰度。
+使用训练后的 YOLO 模型检测背鳍。
 """
 import os
 import glob
@@ -13,8 +13,6 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 from resource_paths import resource_path
-from blur_detector_torch import BlurDetector
-from fin_aspect_classifier_torch import FinAspectClassifier
 from check_duplicate_detections import filter_duplicate_detections
 
 class FinLocator:
@@ -22,34 +20,22 @@ class FinLocator:
     def __init__(
         self,
         yolo_model_path: str = None,
-        blur_model_path: str = None,
-        aspect_model_path: str = None,
         iou_threshold: float = 0.5):
         """
         Args:
             yolo_model_path: YOLO 模型权重路径; None 用内置默认权重
-            blur_model_path: 模糊检测模型权重路径; None 用内置默认权重
-            blur_model_path: 部位检测模型权重路径; None 用内置默认权重
             iou_threshold: 去重 IOU 阈值
         """
         if yolo_model_path is None:
             yolo_model_path = resource_path(
                 os.path.join("models", "fin_yolo_3class_PICWD_best.pt"))
-        if blur_model_path is None:
-            blur_model_path = resource_path(
-                os.path.join("models", "blur_detection_resnet101_final.pth"))
-        if aspect_model_path is None:
-            aspect_model_path = resource_path(
-                os.path.join("models", "fin_aspect_resnet101_final.pth"))
         self.iou_threshold = iou_threshold
         self.fin_detector = YOLO(yolo_model_path, task='detect')
-        self.blur_detector = BlurDetector(blur_model_path)
-        self.aspect_detector = FinAspectClassifier(aspect_model_path)
 
         # initilize DataFrame
         self.fin_info = pd.DataFrame(
             columns=[
-                "Identity", "Path", "Aspect", "AspectConf", "Clearness", "CropConf", "XMin",
+                "Identity", "Path", "CropConf", "XMin",
                 "XMax", "YMin", "YMax",
             ]
         )
@@ -64,18 +50,16 @@ class FinLocator:
             jpg_path: 原始 JPG 图像路径
             result: ultralytics 对该图像的检测结果
         Returns:
-            (fin_rows, fin_imgs): 元数据行（clearness 留待批量模糊检测后填）
-            与对应的背鳍图列表，两者一一对应
+            fin_rows: 元数据行列表; Clearness/Aspect 留待 Step3 统一分析
         """
         photo_name = os.path.basename(jpg_path)
 
         fin_rows = []
-        fin_imgs = []
         boxes = result.boxes
         photo_h, photo_w = boxes.orig_shape
         # if no fin was found, pass it
         if boxes is None or len(boxes) == 0:
-            return fin_rows, fin_imgs
+            return fin_rows
         # check and remove dulicated fin(s)
         keep_indices = filter_duplicate_detections(boxes, self.iou_threshold)
         # check each found fin
@@ -83,21 +67,19 @@ class FinLocator:
             xyxy = boxes[fin_idx].xyxy
             x0, y0, x1, y1 = [int(i) for i in xyxy[0]]
             conf = float(boxes[fin_idx].conf)
-            fin_class_name = result.names[int(boxes[fin_idx].cls)]
-            fin_img = result.orig_img[y0:y1, x0:x1, :].copy() 
+            fin_img = result.orig_img[y0:y1, x0:x1, :].copy()
             prefix, extension = os.path.splitext(photo_name)
             fin_name = f"{prefix}_FIN{new_idx:02d}{extension}"
             fin_path = os.path.join(self.fin_save_dir, fin_name)
             cv2.imwrite(fin_path, fin_img)
 
             fin_rows.append(
-                {   
+                {
                     "identity": "",
                     "PhotoName": photo_name,
                     "PhotoWidth": photo_w,
                     "PhotoHeight": photo_h,
                     "Path": f"FIN/{fin_name}",
-                    #"Aspect": fin_class_name,
                     "CropConf": conf,
                     "XMin": x0,
                     "XMax": x1,
@@ -105,8 +87,7 @@ class FinLocator:
                     "YMax": y1,
                 }
             )
-            fin_imgs.append(fin_img)
-        return fin_rows, fin_imgs
+        return fin_rows
 
     @staticmethod
     def _read_photo(path):
@@ -171,20 +152,8 @@ class FinLocator:
                 if not photos:
                     continue
                 results = self.fin_detector(photos, verbose=False)
-                batch_rows, batch_imgs = [], []
                 for jpg_path, result in zip(valid_paths, results):
-                    rows, imgs = self._process_result(jpg_path, result)
-                    batch_rows.extend(rows)
-                    batch_imgs.extend(imgs)
-                # 整批裁剪图一次跑模糊检测，避免逐张单样本 ResNet-101 推理
-                if batch_imgs:
-                    blur_rets = self.blur_detector.predict_batch(batch_imgs)
-                    aspect_rets = self.aspect_detector.predict_batch(batch_imgs)
-                    for row, blur_ret, aspect_ret in zip(batch_rows, blur_rets, aspect_rets):
-                        row["Clearness"] = blur_ret["probabilities"]["clear"]
-                        row["Aspect"] = aspect_ret["class"]
-                        row["Aspect_Conf"] = aspect_ret["confidence"]
-                all_rows.extend(batch_rows)
+                    all_rows.extend(self._process_result(jpg_path, result))
         self.fin_info = pd.DataFrame(all_rows)
         # 生成唯一编号
         self.fin_info["identity"] = range(len(self.fin_info))
@@ -202,13 +171,6 @@ class FinLocator:
         self.fin_info.to_csv(self.fin_info_csv, index=False)
         self.photo_info_df.to_csv(self.photo_info_csv, index=False)
         print(f"已保存元数据: {self.fin_info_csv}, {self.photo_info_csv}")
-
-    def close(self):
-        """释放分类器内部的线程池等资源。"""
-        for detector in (self.blur_detector, self.aspect_detector):
-            close = getattr(detector, "close", None)
-            if close is not None:
-                close()
 
 if __name__ == "__main__":
     import sys

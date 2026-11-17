@@ -405,7 +405,9 @@ class BlurDetector:
     """
     def __init__(self, model_path=None, device=None, num_workers=8):
         self.input_size = (224, 224)
+        self.device = None
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print("Use", self.device)
         self.class_names = ['clear', 'blur']
         
         # 创建模型
@@ -413,7 +415,9 @@ class BlurDetector:
         
         if model_path and os.path.exists(model_path):
             self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-            print(f"已加载模型: {model_path}")
+            print(f"Load quality model: {model_path}")
+        else:
+            print(f"Quality model isn't valid: {model_path}")
         
         self.model.eval()
         
