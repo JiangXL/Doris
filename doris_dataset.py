@@ -1898,13 +1898,13 @@ class Dataset:
                     new_conn[idx, N] = 1.0
 
         # 备份并保存
-        bdir = os.path.join(self.meta_dir, "backup")
-        os.makedirs(bdir, exist_ok=True)
-        for fp in (sim_file, conn_file, feat_file):
-            if os.path.isfile(fp):
-                shutil.copy2(fp, os.path.join(
-                    bdir, os.path.basename(fp) + "." +
-                    datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
+        #bdir = os.path.join(self.meta_dir, "backup")
+        #os.makedirs(bdir, exist_ok=True)
+        #for fp in (sim_file, conn_file, feat_file):
+        #    if os.path.isfile(fp):
+        #        shutil.copy2(fp, os.path.join(
+        #            bdir, os.path.basename(fp) + "." +
+        #            datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
 
         new_features = np.vstack([old_features, f_new])
         np.save(feat_file, new_features)
@@ -1927,12 +1927,12 @@ class Dataset:
     # ------------------------------------------------------------------
     def _save_csv(self, df, fname):
         path = os.path.join(self.meta_dir, fname)
-        if os.path.isfile(path):
-            bdir = os.path.join(self.meta_dir, "backup")
-            os.makedirs(bdir, exist_ok=True)
-            shutil.copy2(path, os.path.join(
-                bdir, fname + "." +
-                datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
+        #if os.path.isfile(path):
+        #    bdir = os.path.join(self.meta_dir, "backup")
+        #    os.makedirs(bdir, exist_ok=True)
+        #    shutil.copy2(path, os.path.join(
+        #        bdir, fname + "." +
+        #        datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
         df.drop(columns=["fullpath"], errors="ignore") \
             .to_csv(path, index=False)
         self._invalidate_cache()
@@ -2187,11 +2187,11 @@ class Dataset:
         sim[np.ix_(ib, ia)] = 0
         conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
         if os.path.isfile(conn_file):
-            bdir = os.path.join(self.meta_dir, "backup")
-            os.makedirs(bdir, exist_ok=True)
-            shutil.copy2(conn_file, os.path.join(
-                bdir, "FIN_CONNECTION.npy." +
-                datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
+            #bdir = os.path.join(self.meta_dir, "backup")
+            #os.makedirs(bdir, exist_ok=True)
+            #shutil.copy2(conn_file, os.path.join(
+            #    bdir, "FIN_CONNECTION.npy." +
+            #    datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
             np.save(conn_file, sim)
         self._invalidate_cache()
 
