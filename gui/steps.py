@@ -21,22 +21,19 @@ def _scan_photos(root):
 
 
 def _release_gpu():
-    """释放 PyTorch CUDA 缓存并触发垃圾回收。"""
+    """推理结束后触发垃圾回收（ONNX Runtime 无需手动释放 CUDA 缓存）。"""
     import gc
-    import torch
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
     gc.collect()
 
 
 def _locate_fin(root):
-    import torch
+    from onnx_infer import is_gpu_available
     from Step2_locate_fin import FinLocator
 
     locator = FinLocator()
     cpu_num = os.cpu_count()
-    if torch.cuda.is_available():
-        batch = 32
+    if is_gpu_available():
+        batch = 4
         decode = int(cpu_num * 0.8)
         prefetch = 4
     else:

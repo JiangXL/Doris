@@ -62,10 +62,12 @@ def filter_duplicate_detections(boxes, iou_threshold=0.5):
     """
     if len(boxes) == 0:
         return []
-    # list of [x_min, y_min, x_max, y_max]
-    xyxy = boxes.xyxy.cpu().numpy()
+    # list of [x_min, y_min, x_max, y_max]（兼容 torch tensor 与 numpy）
+    xyxy = boxes.xyxy
+    xyxy = xyxy.cpu().numpy() if hasattr(xyxy, "cpu") else np.asarray(xyxy)
     # list of confidence scores
-    confs = boxes.conf.cpu().numpy()
+    confs = boxes.conf
+    confs = confs.cpu().numpy() if hasattr(confs, "cpu") else np.asarray(confs)
     # 按置信度降序排序
     indices = np.argsort(confs)[::-1]
     

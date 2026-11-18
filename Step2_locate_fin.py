@@ -1,6 +1,6 @@
 # coding: utf-8
 """从海豚原始相片识别并剪裁背鳍图像
-使用训练后的 YOLO 模型检测背鳍。
+使用训练后的 YOLO 模型检测背鳍（ONNX Runtime 推理）。
 """
 import os
 import glob
@@ -10,9 +10,9 @@ from concurrent.futures import ThreadPoolExecutor
 import cv2
 import pandas as pd
 from tqdm import tqdm
-from ultralytics import YOLO
 
 from resource_paths import resource_path
+from onnx_infer import OnnxFinDetector, is_gpu_available
 from check_duplicate_detections import filter_duplicate_detections
 
 class FinLocator:
@@ -23,14 +23,14 @@ class FinLocator:
         iou_threshold: float = 0.5):
         """
         Args:
-            yolo_model_path: YOLO 模型权重路径; None 用内置默认权重
+            yolo_model_path: YOLO ONNX 模型路径; None 用内置默认权重
             iou_threshold: 去重 IOU 阈值
         """
         if yolo_model_path is None:
             yolo_model_path = resource_path(
-                os.path.join("models", "fin_yolo_3class_PICWD_best.pt"))
+                os.path.join("models", "fin_yolo_3class_PICWD_best.onnx"))
         self.iou_threshold = iou_threshold
-        self.fin_detector = YOLO(yolo_model_path, task='detect')
+        self.fin_detector = OnnxFinDetector(yolo_model_path)
 
         # initilize DataFrame
         self.fin_info = pd.DataFrame(
@@ -106,7 +106,9 @@ class FinLocator:
         """批量检测并剪裁背鳍。
         Args:
             root_dir: 存放原始 *.JPG 的目录
-            batch_size: YOLO 推理批大小
+            batch_size: JPEG 解码分组的批大小（仅影响解码并行粒度；
+                YOLO 推理批由 onnx_infer.OnnxFinDetector 的 batch 控制，
+                显存不足时自动减半，与显存占用无关）
             decode_workers: JPEG 解码线程数（cv2.imread 释放 GIL，可多线程并行）
             prefetch_batches: 预取批数
             max_inflight_images: 内存中最多同时存在的解码图数量上限，
@@ -174,7 +176,6 @@ class FinLocator:
 
 if __name__ == "__main__":
     import sys
-    import torch
     import multiprocessing
     multiprocessing.freeze_support()
     if len(sys.argv) != 2:
@@ -186,9 +187,9 @@ if __name__ == "__main__":
     # 执行批量剪裁
 
     cpu_num = os.cpu_count()
-    if torch.cuda.is_available(): # gpu 
+    if is_gpu_available(): # gpu
         print("Using GPU")
-        batch = 64
+        batch = 4
         decode = int(cpu_num * 0.8)
         prefetch = 4
     else: # cpu only

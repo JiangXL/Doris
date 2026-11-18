@@ -1,0 +1,26 @@
+# Python dependencies for the Doris dolphin re-identification project (runtime).
+# 推理全部经 ONNX Runtime（onnx_infer.py），运行时不需要 torch/timm/ultralytics。
+# 模型导出与训练所需依赖见 requirements-dev.txt。
+# Install with:
+#     pip install -r requirements-runtime.txt
+
+# Core data / image processing
+numpy
+pandas==3.1.1
+Pillow
+opencv-python-headless
+
+# Inference (GPU/CPU); CUDA EP 需要 CUDA 13 运行库 + cuDNN 9，详见
+# https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html
+onnxruntime-gpu[cuda,cudnn]
+
+# EXIF metadata reading
+pyexiv2
+
+# Utilities / visualization
+matplotlib
+networkx
+scipy
+tqdm
+PyQt6
+python-pptx

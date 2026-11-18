@@ -3,22 +3,19 @@
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 
-# torchvision >= 0.25 的扩展名为 _C_stable.so / image_stable.so，
-# 不匹配 PyInstaller 默认的 lib*.so 模式，需显式加宽搜索模式
-_torchvision_libs = collect_dynamic_libs(
-    'torchvision', search_patterns=['*.so', '*.so.*', '*.dll', '*.dylib', '*.pyd'])
-
+# 推理经 ONNX Runtime（onnx_infer.py），torch/torchvision/timm/ultralytics 为开发专用依赖，
+# 打包时通过 excludes 剔除；onnxruntime 的动态库（含 CUDA EP 库）显式收集。
 a = Analysis(
         ['Doris.py'],
     pathex=[],
-    binaries= collect_dynamic_libs('torch') + _torchvision_libs 
+    binaries= collect_dynamic_libs('onnxruntime')
                 + collect_dynamic_libs('pyexiv2'),
     datas=[
-        ('models/fin_yolo_3class_PICWD_best.pt', 'models'),
-        ('models/fin_quality_detection_resnet101_final.pth', 'models'),
-        ('models/fin_aspect_resnet101_final.pth', 'models'),
-        ('models/megadescriptor_dolphin_ft.pth', 'models'),
-    ], 
+        ('models/fin_yolo_3class_PICWD_best.onnx', 'models'),
+        ('models/fin_quality_detection_resnet101_final.onnx', 'models'),
+        ('models/fin_aspect_classification_resnet101_final.onnx', 'models'),
+        ('models/megadescriptor_dolphin_ft.onnx', 'models'),
+    ],
     hiddenimports=[
         'Step1a_scan_photo_exif',
         'Step1b_analyse_photo_jitter',
@@ -27,8 +24,7 @@ a = Analysis(
         'Step5_sort_fin_automatic',
         'Step6a_export_database',
         'Step6b_export_pptx',
-        'blur_detector_torch',
-        'fin_aspect_classifier_torch',
+        'onnx_infer',
         'check_duplicate_detections',
         'KalmanBoxTracker',
         'resource_paths',
@@ -36,7 +32,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PyQt5', 'PySide6', 'jupyter', 'notebook', 'pytest'],
+    excludes=['PyQt5', 'PySide6', 'jupyter', 'notebook', 'pytest',
+              'torch', 'torchvision', 'timm', 'ultralytics'],
     noarchive=False,
     optimize=0,
 )

@@ -1,0 +1,18 @@
+# 开发/训练依赖（在 requirements.txt 运行时依赖之上叠加）：
+#   - export_models_onnx.py 导出 ONNX 模型需要 torch/ultralytics/timm
+#   - training/ 训练脚本需要 torch/torchvision/timm/scikit-learn
+# 部署打包（PyInstaller）不安装本文件。
+# Install with:
+#     pip install -r requirements-dev.txt
+
+-r requirements-runtime.txt
+
+# Deep learning (train/export only; 运行时推理用 onnxruntime-gpu)
+# NOTE: torch/torchvision versions below include CUDA 13 support (对齐 onnxruntime-gpu 1.32)。
+# For CPU-only or a different CUDA version, install the appropriate wheel from
+# https://pytorch.org/get-started/locally/ instead.
+torch
+torchvision
+timm
+ultralytics
+scikit-learn
