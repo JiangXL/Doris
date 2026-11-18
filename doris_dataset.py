@@ -17,7 +17,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-ASPECT_LABELS = {"DL": "Left", "DR": "Right", "Others": "Misc", "ND":"Not Dolphin"}
+ASPECT_LABELS = {"DL": "LEFT", "DR": "RIGHT", "MISC": "MISC", "ND":"Not Dolphin"}
 
 
 class Dataset:

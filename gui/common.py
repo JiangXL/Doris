@@ -26,7 +26,8 @@ MIME_PATHS = "application/x-doris-paths"
 
 
 BOX_COLORS = {"DL": QColor(0, 200, 0), "DR": QColor(255, 140, 0),
-              "Others": QColor(220, 0, 0), "ND": QColor(128, 128, 128)}
+              "MISC": QColor(220, 0, 0), "ND": QColor(128, 128, 128)}
+
 def draw_boxes(target, boxes, orig_w, orig_h):
     """在目标 QImage/QPixmap 上画鳍框 (orig_w/h 为框坐标对应的图像尺寸)。
     boxes: [(x0, y0, x1, y1, cls[, extra]), ...] 图像像素坐标;
@@ -1011,7 +1012,7 @@ class ImageViewerDialog(QDialog):
         if x1 - x0 < 5 or y1 - y0 < 5:
             return
         aspect, ok = QInputDialog.getItem(
-            self, "Add Fin", "Aspect:", ["DL", "DR", "Others"], 0, False)
+            self, "Add Fin", "Aspect:", ["DL", "DR", "MISC"], 0, False)
         if not ok:
             return
         box = (x0, y0, x1, y1, str(aspect), None)
