@@ -26,7 +26,4 @@ networkx
 tqdm
 scikit-learn
 PyQt6
-
-# Deprecated / optional scripts also reference the following, kept here for
-# completeness if you need to run code under deprecated/:
-# tensorflow
+pptx

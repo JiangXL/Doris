@@ -64,14 +64,14 @@ class DatabaseExporter:
         return True
 
     def export_dolphin_images(self):
-        """按 DphID 分组导出含 Clear=True 的照片
+        """按 DphID 分组导出True 的照片
         out_dir 默认为 root_dir/EXPORT; 已存在的目标文件直接覆盖。
         返回 {DolphinID: {"copied": n, "missing": [原图名...]}}。"""
         out_dir = self.out_dir
         df = self.fin_df
-        # 忽略无 DolphinID 的行, 再按 clear==1 过滤
+        # 忽略无 DolphinID 的行
         sub = df.dropna(subset=["DolphinID"])
-        sub = sub.query("Clear==True")
+        #sub = sub.query("Clear==True")
         for dph, g in sub.groupby("DolphinID", sort=True):
             folder = os.path.join(out_dir, str(dph))
             for name in g["PhotoName"]:
@@ -80,8 +80,7 @@ class DatabaseExporter:
 
     def export_low_quality_images(self):
         """
-        photo("FinCount==0") in PHOTO_METAINFO
-        & photo(without any DphID) in FIN_METAINFO
+        photo(without any DphID, exepct NOTE marked) in FIN_METAINFO
         will copy to "EXPORT/Quality below 60" folder
         """
         folder = os.path.join(self.root_dir, "EXPORT", "Quality below 60")
@@ -89,13 +88,15 @@ class DatabaseExporter:
         photo = self.photo_df
         if photo is not None and not photo.empty:
             all_photos = set(photo["PhotoName"])
+            note_photos = set(photo.query("ShotType=='NOTE'")['PhotoName'])
+            misc_photos = set(photo.query("ShotType=='MISC'")['PhotoName'])
         else:
             print("Miss valid PHOTO_METAINFO.csv")
         fin = self.fin_df
         if not fin.empty and "PhotoName" in fin.columns:
             all_orig = set(fin["PhotoName"].dropna())
             # 无鳍的原图 
-            low |= all_photos - all_orig
+            low |= all_photos - all_orig - note_photos - misc_photos
             # 有鳍但没有 DolphinID 的照片
             if "DolphinID" in fin.columns:
                 with_dph = fin.dropna(subset=["DolphinID"])

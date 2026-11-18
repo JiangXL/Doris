@@ -22,17 +22,18 @@
 [x] enable user to update bonding box in full-e
 [] overview mode for shot tab
 [] 设计检漏页面
-[] bug: 修改 bonding box 后的图，无法定位到原始照片
+[x] bug: 修改 bonding box 后的图，无法定位到原始照片
 [] bug: after move selected fin image instead of whole track, the BestInShot/BestInFin label may lost
 [] error check: whether single FinID has multiple dolphinid?
 [] error check :don't assign DphID to fin without FinID
 [] assign new BestInShot for new FinID and orignal FinID when user only move selected fin images out of current FinID, 
 [x] Plot: water fall traffic
+[x] allow user to new fin before extract feature
 [] allow user to new/delete fin before extract feature
-[] new fin
+[x] new fin
 [] rename social strcture to Subgroup
 
 [x] New dolphin 
-2. Low quality 60
+[x] Low quality 60
 [x] marker the dolhpin with NN label, assign the same font color for the same group
 [x] 根据 NN 排序 DphID
