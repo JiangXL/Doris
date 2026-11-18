@@ -43,8 +43,10 @@ splash = Splash(
     'Delphinus_IAU.png',
     binaries=a.binaries,
     datas=a.datas,
-    text_pos=None,
-    text_size=12,
+    text_pos=(40, 1700),
+    text_size=48,
+    text_default='Booting',
+    text_color='white',
     min_time=0,
     always_on_top=True,
 )
