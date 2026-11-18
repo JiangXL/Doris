@@ -15,7 +15,7 @@ a = Analysis(
                 + collect_dynamic_libs('pyexiv2'),
     datas=[
         ('models/fin_yolo_3class_PICWD_best.pt', 'models'),
-        ('models/blur_detection_resnet101_final.pth', 'models'),
+        ('models/fin_quality_detection_resnet101_final.pth', 'models'),
         ('models/fin_aspect_resnet101_final.pth', 'models'),
         ('models/megadescriptor_dolphin_ft.pth', 'models'),
     ], 
@@ -62,7 +62,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
