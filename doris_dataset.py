@@ -1039,25 +1039,27 @@ class Dataset:
         - 或有鳍框, 但没有任何一条鳍同时满足 DolphinID 非空且 Clear==True 的照片。
         返回路径按文件名排序, 只返回磁盘上存在的文件。
         """
-        if self.photo_df.empty or "PhotoName" not in self.photo_df.columns:
-            return []
-        all_photos = set(self.photo_df["PhotoName"].dropna().astype(str))
-        if not all_photos:
-            return []
         low = set()
+        note_photos = set()
+        misc_photos = set()
+        if self.photo_df is not None and not self.photo_df.empty:
+            all_photos = set(self.photo_df["PhotoName"])
+            if "ShotType" in self.photo_df.columns:
+                note_photos = set(self.photo_df.query("ShotType=='NOTE'")['PhotoName'])
+                misc_photos = set(self.photo_df.query("ShotType=='MISC'")['PhotoName'])
+        else:
+            print("Miss valid PHOTO_METAINFO.csv")
         if not self.fin_df.empty and "PhotoName" in self.fin_df.columns:
-            all_orig = set(self.fin_df["PhotoName"].dropna().astype(str))
+            all_orig = set(self.fin_df["PhotoName"].dropna())
             # 没有任何鳍框
-            low |= all_photos - all_orig
+            low |= all_photos - all_orig - note_photos - misc_photos
             # 有鳍但无 DolphinID 的鳍
             if "DolphinID" in self.fin_df.columns:
                 with_dph = self.fin_df.dropna(subset=["DolphinID"])
-                with_dph= set(with_dph["PhotoName"].dropna().astype(str))
+                with_dph= set(with_dph["PhotoName"].dropna())
             else:
                 with_dph = set()
             low |= all_orig - with_dph
-        else:
-            low = all_photos
         out = []
         for name in sorted(low):
             p = os.path.join(self.root, str(name))

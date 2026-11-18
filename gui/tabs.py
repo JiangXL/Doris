@@ -126,8 +126,10 @@ class DashboardTab(QWidget):
         self.root_label = QLabel("(未设置)")
         self.root_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         grid.addWidget(self.root_label, 0, 1)
+        self._step_btns = {}  # 按钮文字 -> 按钮, 供按状态检查逐级启用
         for i, (text, step_callable, save_dialog) in enumerate(self.STEPS, 1):
             btn = QPushButton(text)
+            self._step_btns[text] = btn
             if save_dialog:
                 btn.clicked.connect(lambda _=False, c=step_callable, b=btn:
                                     self._run_step_with_save_dialog(c, b))
@@ -165,6 +167,27 @@ class DashboardTab(QWidget):
         self._update_scan_status()
         self._update_fin_status()
         self._update_feature_status()
+        self._update_step_enablement()
+
+    def _update_step_enablement(self):
+        """按状态检查逐级启用步骤按钮: 每一步的"通过"解锁它下面的所有按钮。
+        检查条件与右侧状态标签一致 (对应 METAINFO 文件是否存在)。"""
+        meta = os.path.join(self._root, "METAINFO") if self._root else None
+        scan_ok = bool(meta) and os.path.isfile(
+            os.path.join(meta, "PHOTO_METAINFO.csv"))
+        locate_ok = bool(meta) and os.path.isfile(
+            os.path.join(meta, "FIN_METAINFO.csv"))
+        analyse_ok = bool(meta) and os.path.isfile(
+            os.path.join(meta, "FIN_DEEPFEATURES.npy"))
+        gates = {
+            "3. Locate Fin": scan_ok,
+            "4. Analyse Fin": locate_ok,
+            "5. Cluster Fin": analyse_ok,
+            "6. Export Database": analyse_ok,
+            "7. Export Dolphin Overview PPT": analyse_ok,
+        }
+        for text, btn in self._step_btns.items():
+            btn.setEnabled(gates.get(text, True))  # 未列出的 (Scan Photos) 常开
 
     def _pick_root(self):
         """弹出非原生目录选择对话框, 避免某些平台下原生对话框点击"打开"不关闭的问题。"""
@@ -300,6 +323,7 @@ class DashboardTab(QWidget):
             self._update_feature_status()
         self._append_log("%s 已结束 (exit code %d)" % (btn.text(), exit_code),
                          color="#5bc0de" if exit_code == 0 else "#ff6b6b")
+        self._update_step_enablement()
         if exit_code == 0 and any(k in btn.text() for k in
                                   ("Scan Photos", "Locate Fin",
                                    "Analyse Fin", "Cluster Fin")):

@@ -13,7 +13,8 @@ class ExifScanner:
         self.photo_df = pd.DataFrame(
             columns=["PhotoName", "PhotoWidth", "PhotoHeight",
                 "FocusPosition2", "Temperature", "Datetimesec",
-                "Exposure", "FocusLength35mm"
+                "Exposure", "FocusLength35mm", "ShotType",
+                "PhotoType"
             ]
         )
         self.meta_filename = "PHOTO_METAINFO.csv"

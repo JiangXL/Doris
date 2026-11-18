@@ -11,16 +11,19 @@ from PyQt6.QtWidgets import (
     QInputDialog,
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon
 
 from doris_dataset import Dataset
 from .tabs import DashboardTab, GroupedTab, StatisticsTab
 from .dolphin import DolphinTab, MatchPanel, CandidateList
 from .common import ImageGrid
+from resource_paths import resource_path
 
 class MainWindow(QMainWindow):
     def __init__(self, root):
         super().__init__()
         self.setWindowTitle("Doris v0.2.2 — %s" % root)
+        self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
         #self.resize(1280, 800)
 
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
