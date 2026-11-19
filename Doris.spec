@@ -1,15 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
+import sys
 
 
 # 推理经 ONNX Runtime（onnx_infer.py），torch/torchvision/timm/ultralytics 为开发专用依赖，
 # 打包时通过 excludes 剔除；onnxruntime 的动态库（含 CUDA EP 库）显式收集。
+# Windows 上 ORT 的 CUDA EP 依赖 cuDNN 9（cudnn64_9.dll 及配套 DLL），pip 的
+# nvidia-cudnn-cu13 包提供这些 DLL，必须一并打包（Linux 走 LD_LIBRARY_PATH 不需打包）。
+_nv_bins = []
+if sys.platform == 'win32':
+    _nv_bins += collect_dynamic_libs('nvidia.cudnn')
+
 a = Analysis(
         ['Doris.py'],
     pathex=[],
     binaries= collect_dynamic_libs('onnxruntime')
-                + collect_dynamic_libs('pyexiv2'),
+                + collect_dynamic_libs('pyexiv2')
+                + _nv_bins,
     datas=[
         ('models/fin_yolo_3class_PICWD_best.onnx', 'models'),
         ('models/fin_quality_detection_resnet101_final.onnx', 'models'),
