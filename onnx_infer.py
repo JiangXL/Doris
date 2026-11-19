@@ -6,7 +6,9 @@
 （letterbox/scale_boxes 公式与 ultralytics 源码逐步对齐，见各函数注释）。
 """
 import os
+import sys
 import ast
+import ctypes
 
 import cv2
 import numpy as np
@@ -14,7 +16,22 @@ from PIL import Image
 from tqdm import tqdm
 import onnxruntime as ort
 
-ort.preload_dlls()
+
+def _has_nvidia_driver() -> bool:
+    """是否存在 NVIDIA 驱动。无 NVIDIA GPU 的机器跳过 CUDA 运行库预加载，
+    避免冻结包在无 GPU 的机器上启动推理时刷 CUDA DLL 加载失败日志
+    （此时本就走 CPU 回退，行为不受影响）。"""
+    if sys.platform == 'win32':
+        try:
+            ctypes.CDLL('nvcuda.dll')  # 驱动安装到 System32，可加载即认为有 GPU
+            return True
+        except OSError:
+            return False
+    return os.path.isdir('/proc/driver/nvidia')
+
+
+if _has_nvidia_driver():
+    ort.preload_dlls()
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)

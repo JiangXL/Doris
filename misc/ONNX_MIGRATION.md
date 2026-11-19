@@ -29,7 +29,7 @@ onnx_infer.py（运行时，零 torch 依赖）
 3. **yolo26 导出模式图内做 topk-300 预选**，score 列尺度比 torch conf 高约 9~16%（IoU 类分数并入），但 0.25 过滤边界等价（实测计数逐图一致）；min 匹配 IoU 0.944（密集场景个别赢家被预选替换，裁剪用途无实际影响）。尝试提升 topk 上限无法从外部覆盖，已接受并注释在 `onnx_infer.py`。
 4. **ORT CUDA 运行库**：onnxruntime-gpu 1.32 需 CUDA 13 + cuDNN 9；本机借 torch 的 nvidia pip 库 + `nvidia-curand-cu12` 解决；无库时自动回退 CPU。
 5. **ORT 激活内存 > torch eager**：Swin 特征提取 batch 32→8；步骤间需释放会话（GUI 流程本就 del + gc）。
-6. **Windows 部署缺 cuDNN**（`LoadLibrary failed for cudnn64_9.dll`，error 2）：Linux 靠 `LD_LIBRARY_PATH` 指到 pip 的 nvidia 库，Windows 无此机制、PyInstaller 默认也不收 nvidia 包的 DLL。解决：`Doris.spec` 在 `win32` 下追加 `collect_dynamic_libs('nvidia.cudnn')`（需构建 venv 里装了 `nvidia-cudnn-cu13`）；已部署的旧包可手工把 `<venv>\Lib\site-packages\nvidia\cudnn\bin\cudnn*_9.dll` 全部拷到 `dist\Doris\`（Doris.exe 旁边）应急。
+6. **Windows 部署缺 CUDA 运行库**（先报 `LoadLibrary failed for cudnn64_9.dll`，补 cuDNN 后又报 `Failed to load cudart64_13.dll`）：Linux 靠 `LD_LIBRARY_PATH` 指到 pip 的 nvidia 库，Windows 无此机制、PyInstaller 默认也不收 nvidia 包的 DLL。ORT CUDA EP 需要整套 CUDA 13（cudart/cublas/cublasLt/cufft/curand）+ cuDNN 9。解决：`Doris.spec` 在 `win32` 下收集这 5 个 pip 包的 DLL（需构建 venv 装了对应 `nvidia-*-cu13` 包）；注意这会让 Windows 安装包增大约 1.5GB（CUDA 库体积），发布需权衡。
 
 ## 验证（全部通过）
 
@@ -40,7 +40,5 @@ onnx_infer.py（运行时，零 torch 依赖）
 
 ## 遗留事项
 
-- **Windows 构建**需在 Windows 环境跑一次 `pyinstaller Doris.spec` 做最终验证（spec 已平台无关）；构建 venv 须 `pip install nvidia-cudnn-cu13`，否则打出来的包缺 cudnn DLL（见坑 6）。
-- `.pth` 权重运行时已不再需要（仅训练/导出用）；是否从部署包剔除由发布流程决定。
 - fp16 ONNX 可再省约一半模型体积（数值有微差），可作后续项。
 - Step5 中 `CropConf` 现在为图内综合置信度（尺度比 torch 管线高约 10%，单调性基本一致），如影响排序可向 Step5 加归一化。
