@@ -38,6 +38,8 @@ class Dataset:
             if "FinID" in self.fin_df.columns:
                 self.fin_df["FinID"] = self.fin_df["FinID"].map(
                     self._fid_key)
+            if "Aspect" in self.fin_df.columns:
+                self.fin_df.replace({"Aspect":"Others"}, "MISC", inplace=True)
         if "PhotoName" in self.photo_df.columns:
             self.photo_df = self.photo_df.sort_values(by="PhotoName") 
         self._cache = {}
@@ -386,16 +388,16 @@ class Dataset:
             lambda x: mapping.get(str(x), x))
         self._save_csv(df, "FIN_METAINFO.csv")
         # 同步 DOLPHINS.csv 中的空海豚记录
-        p = os.path.join(self.meta_dir, "DOLPHINS.csv")
-        if os.path.isfile(p):
-            try:
-                extras = pd.read_csv(p)
-                if "DolphinID" in extras.columns:
-                    extras["DolphinID"] = extras["DolphinID"].astype(str).map(
-                        lambda x: mapping.get(x, x))
-                    extras.to_csv(p, index=False)
-            except Exception:
-                pass
+        #p = os.path.join(self.meta_dir, "DOLPHINS.csv")
+        #if os.path.isfile(p):
+        #    try:
+        #        extras = pd.read_csv(p)
+        #        if "DolphinID" in extras.columns:
+        #            extras["DolphinID"] = extras["DolphinID"].astype(str).map(
+        #                lambda x: mapping.get(x, x))
+        #            extras.to_csv(p, index=False)
+        #    except Exception:
+        #        pass
         return mapping
 
     def apply_dolphin_order(self, order):
@@ -1609,7 +1611,7 @@ class Dataset:
     def add_fin_box(self, path, box, clearness=None, crop_conf=None):
         """在原始照片上手动添加一个鳍框, 插入 FIN_METAINFO.csv 并生成裁剪图。
 
-        box: (x0, y0, x1, y1, cls, extra); cls 为 Aspect (DL/DR/Others)。
+        box: (x0, y0, x1, y1, cls, extra); cls 为 Aspect (DL/DR/MISC)。
         返回新增行的 index, 失败返回 None。新行的 FinID 初始为 "0" (未分类),
         DolphinID 为空, TrackIDInShot 为空。
         """

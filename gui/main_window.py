@@ -22,7 +22,7 @@ from resource_paths import resource_path
 class MainWindow(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("Doris v0.2.2 — %s" % root)
+        self.setWindowTitle("Doris v0.2.4 — %s" % root)
         self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
         #self.resize(1280, 800)
 

@@ -101,7 +101,7 @@ class FinLocator:
             batch_size: int = 4,
             decode_workers: int = 6,
             prefetch_batches: int = 4,
-            max_inflight_images: int = 128,
+            max_inflight_images: int = 32,
         ) :
         """批量检测并剪裁背鳍。
         Args:
