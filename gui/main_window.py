@@ -20,18 +20,36 @@ from .common import ImageGrid
 from resource_paths import resource_path
 
 class MainWindow(QMainWindow):
-    def __init__(self, root):
+    def __init__(self, root=None):
         super().__init__()
-        self.setWindowTitle("Doris v0.2.4 — %s" % root)
+        self.setWindowTitle("Doris v0.2.4 — %s" % root if root
+                            else "Doris v0.2.4")
         self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
         #self.resize(1280, 800)
 
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
+        self._group_tabs = []   # 未 load 前为空, 供 _on_tab_changed 安全遍历
+        self._stats_tab = None
         self.tabs = QTabWidget()
         # 切到统计页时惰性重算, 保证任何改组后看到的都是最新数据
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
-        self.load(root)
+        if root:
+            self.load(root)
+        else:
+            # 未选根目录: 只放 Dashboard, 步骤按钮全禁用, 等用户选目录
+            self.root = None
+            self._ensure_dashboard()
+            self._dashboard.set_root(None)
+
+    def _ensure_dashboard(self):
+        """创建并连接 Dashboard 页 (只建一次, 重载数据页时保留终端输出)。"""
+        if self._dashboard is not None:
+            return
+        self._dashboard = DashboardTab()
+        self._dashboard.root_changed.connect(self.load)
+        self._dashboard.data_changed.connect(lambda: self.load(self.root))
+        self.tabs.addTab(self._dashboard, "Dashboard")
 
     def _on_tab_changed(self, i):
         """切换标签页时, 若目标页标记为脏则重建。"""
@@ -113,14 +131,7 @@ class MainWindow(QMainWindow):
             "FIN_DOLPHIN": lambda: self._fin_has_columns("DolphinID"),
         }
         self._clear_data_tabs()
-
-        # 0. Dashboard 页: 处理流程入口; 常驻不重建,
-        # 重载数据页时终端输出不丢; 流水线步骤成功后经 data_changed 触发重载
-        if self._dashboard is None:
-            self._dashboard = DashboardTab()
-            self._dashboard.root_changed.connect(self.load)
-            self._dashboard.data_changed.connect(lambda: self.load(self.root))
-            self.tabs.addTab(self._dashboard, "Dashboard")
+        self._ensure_dashboard()
         self._dashboard.set_root(root)
 
         # Dataset 可容忍缺失文件 (空 dataframe), 因此始终创建, 用于初始化各页
@@ -515,7 +526,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_fin_boxes_on_tabs(self, path):
         """更新所有依赖 fin_boxes 的 tab 上的框。"""
-        fin_tabs = {"Fin Aspect", "Blur", "Fin ID", "Continuous Shots"}
+        fin_tabs = {"Fin Aspect", "Fin Quality", "Fin ID", "Continuous Shots"}
         for title, tab, fn in self._group_tabs:
             if title in fin_tabs or title == "Social Structure":
                 dolphin_id = (title == "Social Structure")
@@ -524,9 +535,9 @@ class MainWindow(QMainWindow):
                 tab.grid.refresh_path(path)
 
     def _rebuild_group_tab(self, tab, title, fn):
-        """重建一个分组页 (Continuous Shots / Fin Aspect / Blur / Fin ID / Social Structure)。"""
+        """重建一个分组页 (Continuous Shots / Fin Aspect / Fin Quality / Fin ID / Social Structure)。"""
         ds = self.ds
-        fin_tabs = {"Fin Aspect", "Blur", "Fin ID"}
+        fin_tabs = {"Fin Aspect", "Fin Quality", "Fin ID"}
         groups = fn()
         if title == "Fin ID":  # 只显示图片数大于 1 的个体
             groups = {k: v for k, v in groups.items() if len(v) > 1}

@@ -161,9 +161,10 @@ class DashboardTab(QWidget):
         lay.setStretchFactor(self._log, 1)
 
     def set_root(self, root):
-        """主窗口加载/切换根目录后同步显示; 同时刷新各步骤状态标签。"""
+        """主窗口加载/切换根目录后同步显示; 同时刷新各步骤状态标签。
+        root 为 None 表示尚未选择目录: 状态标签保持空, 步骤按钮全禁用。"""
         self._root = root
-        self.root_label.setText(root)
+        self.root_label.setText(root or "(未设置)")
         self._update_scan_status()
         self._update_fin_status()
         self._update_feature_status()
@@ -171,8 +172,13 @@ class DashboardTab(QWidget):
 
     def _update_step_enablement(self):
         """按状态检查逐级启用步骤按钮: 每一步的"通过"解锁它下面的所有按钮。
-        检查条件与右侧状态标签一致 (对应 METAINFO 文件是否存在)。"""
-        meta = os.path.join(self._root, "METAINFO") if self._root else None
+        检查条件与右侧状态标签一致 (对应 METAINFO 文件是否存在)。
+        未选根目录时全部禁用。"""
+        if not self._root:
+            for btn in self._step_btns.values():
+                btn.setEnabled(False)
+            return
+        meta = os.path.join(self._root, "METAINFO")
         scan_ok = bool(meta) and os.path.isfile(
             os.path.join(meta, "PHOTO_METAINFO.csv"))
         locate_ok = bool(meta) and os.path.isfile(

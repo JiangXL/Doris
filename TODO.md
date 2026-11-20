@@ -37,3 +37,4 @@
 [x] Low quality 60
 [x] marker the dolhpin with NN label, assign the same font color for the same group
 [x] 根据 NN 排序 DphID
+[] OpenVINO for intel?

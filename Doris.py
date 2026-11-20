@@ -5,7 +5,7 @@ DorisGUI — 中华白海豚照片浏览与分组 GUI
 
 用法:
   python DorisGUI.py [root_folder]
-默认 root 为演示目录。
+不带参数启动时无默认目录, 需在界面内选择 root_folder。
 """
 
 import os
@@ -38,7 +38,7 @@ if __name__ == "__main__":
             QMessageBox.critical(None, "Doris", "目录不存在: %s" % root)
             sys.exit(1)
     else:
-        root = "demo"
+        root = None  # 未指定根目录: 启动后由用户通过 "Set Root Folder" 选择
     win = MainWindow(root)
     win.show()
     try:
