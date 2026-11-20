@@ -43,7 +43,7 @@ def is_gpu_available() -> bool:
     return 'CUDAExecutionProvider' in ort.get_available_providers()
 
 
-def make_session(onnx_path, providers=None):
+def make_session(onnx_path, providers=None, intra_op_num_threads=None):
     if not os.path.isfile(onnx_path):
         raise FileNotFoundError(f"ONNX 模型文件不存在: {onnx_path}")
     avail = ort.get_available_providers()
@@ -52,6 +52,10 @@ def make_session(onnx_path, providers=None):
         raise RuntimeError("onnxruntime 无可用执行后端（CUDA/CPU 均不可用）")
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    if intra_op_num_threads:
+        # 纯 CPU 推理时显式控制 ORT intra-op 线程数，给解码/后处理线程留出核心，
+        # 避免 ORT 默认占满所有核导致流水线线程超订（CUDA 路径不需要设置）
+        opts.intra_op_num_threads = int(intra_op_num_threads)
     try:
         return ort.InferenceSession(onnx_path, sess_options=opts, providers=prov)
     except Exception:
@@ -198,27 +202,49 @@ class _ShimResult:
 
 class OnnxFinDetector:
     """YOLO 背鳍检测器（ONNX 动态 batch，NMS 在 Python 端复刻 ultralytics 语义）。
-    接口对齐 Step2 对 ultralytics YOLO 的用法：
-    detector(photos, verbose=False) -> list[result]。
-
-    推理批大小由 batch 控制；ORT 显存不足时自动减半重试（适配不同显存 GPU）。
+    按流水线阶段拆为 letterbox / infer / build_results 三个方法，供 Step2
+    流水线分阶段、分线程调用。推理批大小由 batch 控制，初始值较大（16），
+    ORT 显存不足时自动逐级减半重试，并把成功批大小记住（只降不升），
+    自动适配不同显存 GPU。 batch=16 is selected to fit JPEG decoding and gpu utilization
     图输出为 top-300 候选 [x1,y1,x2,y2,score,cls]（640 输入空间，未做 NMS），
     后处理：conf 过滤 -> 按类 NMS -> 坐标还原。
     注意：score 列为图内综合置信度，与 ultralytics torch 管线的 conf 尺度
     略有差异（实测比值 ~1.09-1.16），但 0.25 过滤边界等价（检测计数逐图一致）。"""
 
     def __init__(self, onnx_path, imgsz=640, batch=16,
-                 conf_thres=0.25, iou_thres=0.7, max_det=300):
+                 conf_thres=0.25, iou_thres=0.7, max_det=300,
+                 intra_op_threads=None):
         self.imgsz = imgsz
         self.batch = batch
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.max_det = max_det
-        self.session = make_session(onnx_path)
+        self.session = make_session(onnx_path,
+                                    intra_op_num_threads=intra_op_threads)
         self.input_name = self.session.get_inputs()[0].name
         self.names = read_names_from_metadata(self.session)
 
-    def _run_chunked(self, letterboxed, batch):
+    def letterbox(self, photos):
+        """原图列表 -> letterbox 后图像列表（供 infer 输入）。"""
+        return [letterbox_bgr(p, self.imgsz) for p in photos]
+
+    def infer(self, letterboxed):
+        """letterbox 后图像列表 -> 原始输出 ndarray [N,300,6]（未 NMS）。
+        OOM 时批大小逐级减半重试；成功后把可用批大小写回 self.batch，
+        后续调用直接按学到的批跑，无需重复撞 OOM。"""
+        batch = self.batch
+        while True:
+            try:
+                out = self._infer_chunked(letterboxed, batch)
+                if batch < self.batch:
+                    self.batch = batch
+                return out
+            except Exception as exc:
+                if batch <= 1 or not _is_oom_error(exc):
+                    raise
+                batch = max(1, batch // 2)
+
+    def _infer_chunked(self, letterboxed, batch):
         outputs = []
         for start in range(0, len(letterboxed), batch):
             chunk = letterboxed[start:start + batch]
@@ -227,11 +253,8 @@ class OnnxFinDetector:
             outputs.append(self.session.run(None, {self.input_name: blob})[0])
         return np.concatenate(outputs, axis=0) if len(outputs) > 1 else outputs[0]
 
-    def __call__(self, photos, verbose=False):
-        letterboxed = [letterbox_bgr(p, self.imgsz) for p in photos]
-        outputs = _run_with_batch_retry(lambda b: self._run_chunked(letterboxed, b),
-                                        self.batch)
-
+    def build_results(self, photos, outputs):
+        """原始输出 [N,300,6] -> list[_ShimResult]（逐图 conf 过滤/NMS/坐标还原）。"""
         results = []
         for img, det in zip(photos, outputs):
             orig_shape = img.shape[:2]

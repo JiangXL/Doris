@@ -30,19 +30,22 @@ def _locate_fin(root):
     from onnx_infer import is_gpu_available
     from Step2_locate_fin import FinLocator
 
-    locator = FinLocator()
     cpu_num = os.cpu_count()
     if is_gpu_available():
-        batch = 4
-        decode = int(cpu_num * 0.8)
-        prefetch = 4
+        # 解码是瓶颈（实测 16 线程才打满），推理/后处理开销小，
+        # 二级流水线即可，解码吃满全部核
+        decode = cpu_num
+        prefetch = 1
+        intra_op = None
     else:
-        batch = int(cpu_num * 0.5)
-        decode = int(cpu_num * 0.5)
-        prefetch = 4
+        # 收敛线程预算：decode + ORT intra-op ≈ 核数，避免超订
+        decode = int(cpu_num * 0.25)
+        prefetch = 1
+        intra_op = max(1, cpu_num - decode)
+    locator = FinLocator(intra_op_threads=intra_op)
     try:
-        locator.locate_fin(root, batch_size=batch,
-                           decode_workers=decode, prefetch_batches=prefetch)
+        locator.locate_fin(root, decode_workers=decode,
+                           prefetch_batches=prefetch)
     finally:
         del locator
         _release_gpu()
