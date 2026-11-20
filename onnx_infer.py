@@ -90,7 +90,16 @@ def make_session(onnx_path, providers=None, intra_op_num_threads=None):
     if not os.path.isfile(onnx_path):
         raise FileNotFoundError(f"ONNX 模型文件不存在: {onnx_path}")
     avail = ort.get_available_providers()
-    prov = [p for p in (providers or DEFAULT_PROVIDERS) if p in avail]
+    requested = providers or DEFAULT_PROVIDERS
+    if 'CUDAExecutionProvider' in requested and not is_gpu_available():
+        # 架构不满足 CUDA 13 要求（CC < 7.5）时直接剔除 CUDA，不触发
+        # ORT 初始化失败（cublasCreate 报错刷屏）；其余失败模式仍靠下方
+        # try/except 回退
+        print("GPU 计算能力不满足 CUDA 13 要求（需 sm_75 及以上），"
+              "跳过 CUDA，使用 CPU 推理（速度较慢）")
+        requested = tuple(p for p in requested
+                          if p != 'CUDAExecutionProvider')
+    prov = [p for p in requested if p in avail]
     if not prov:
         raise RuntimeError("onnxruntime 无可用执行后端（CUDA/CPU 均不可用）")
     opts = ort.SessionOptions()
