@@ -38,9 +38,52 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 DEFAULT_PROVIDERS = ('CUDAExecutionProvider', 'CPUExecutionProvider')
 
 
+def _compute_capability():
+    """经 CUDA Runtime（推理实际使用的同一份 cudart）查询 GPU 计算能力
+    (major, minor)。ctypes 加载 cudart 失败 ⟺ CUDA EP 本就跑不起来，
+    返回 None 走 CPU 路径。cudart 版本随 ORT 的 CUDA 版本（现 13）。"""
+    if sys.platform == 'win32':
+        libnames = ('cudart64_13.dll',)  # preload_dlls/打包已载入进程，按名即得
+    else:
+        # dev 靠 LD_LIBRARY_PATH 指向 pip nvidia 库，dist 由 PyInstaller
+        # 引导设置库搜索路径——与 CUDA EP 可用条件一致
+        libnames = ('libcudart.so.13', 'libcudart.so')
+    cudart = None
+    for name in libnames:
+        try:
+            cudart = ctypes.CDLL(name)
+            break
+        except OSError:
+            continue
+    if cudart is None:
+        return None
+    try:
+        count = ctypes.c_int(0)
+        if cudart.cudaGetDeviceCount(ctypes.byref(count)) != 0 or count.value == 0:
+            return None
+        major, minor = ctypes.c_int(0), ctypes.c_int(0)
+        # cudaDevAttrComputeCapabilityMajor/Minor = 75/76
+        if cudart.cudaDeviceGetAttribute(ctypes.byref(major), 75, 0) != 0 \
+                or cudart.cudaDeviceGetAttribute(ctypes.byref(minor), 76, 0) != 0:
+            return None
+        return major.value, minor.value
+    except AttributeError:
+        return None
+
+
+# CUDA 13 的 cuBLAS 放弃 Maxwell/Pascal/Volta（Compute Capability < 7.5），
+# 这类卡初始化 CUDA EP 必然失败（cublasCreate 报 architectural feature absent）
+_CUDA_MIN_CC = (7, 5)
+
+
 def is_gpu_available() -> bool:
-    """onnxruntime 是否可用 CUDA 执行。"""
-    return 'CUDAExecutionProvider' in ort.get_available_providers()
+    """onnxruntime 是否可用 CUDA 执行：provider 已注册、GPU 架构受当前
+    CUDA 运行库支持（Compute Capability >= 7.5）。查不到 GPU 信息时保守
+    返回 False（走 CPU 路径总能工作）。"""
+    if 'CUDAExecutionProvider' not in ort.get_available_providers():
+        return False
+    cc = _compute_capability()
+    return cc is not None and cc >= _CUDA_MIN_CC
 
 
 def make_session(onnx_path, providers=None, intra_op_num_threads=None):

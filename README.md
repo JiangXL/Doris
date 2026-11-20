@@ -52,3 +52,7 @@ There following planes:
 6. Group of Social Structure
 7. Statistics
 
+## Devices
+The GPUs(Maxwell/Pascal/Volta frameworks) without support by CUDA 13 don't accelate inference,
+
+
