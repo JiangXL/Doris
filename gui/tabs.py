@@ -2,6 +2,7 @@
 """通用分组页、统计页与 Dashboard 页。"""
 
 import contextlib
+import html
 import os
 import sys
 from datetime import datetime
@@ -17,7 +18,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QFrame, QToolButton, QMenu, QCheckBox, QComboBox,
     QGridLayout, QPlainTextEdit,
 )
-from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush, QShortcut
+from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush, QShortcut, QTextCursor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
 
 from doris_dataset import Dataset
@@ -38,7 +39,7 @@ class ClassStepRunner(QThread):
     直接实例化 Step*.py 中的类并调用入口方法。
     """
 
-    log_text = pyqtSignal(str, object)
+    log_text = pyqtSignal(str, object, bool)  # (text, color, same_line)
     finished_with_code = pyqtSignal(int)
 
     def __init__(self, fn, parent=None):
@@ -49,6 +50,8 @@ class ClassStepRunner(QThread):
     @contextlib.contextmanager
     def _capture_streams(emit):
         class _EmitStream:
+            """把步骤的 stdout/stderr 按行转发到 GUI 日志。
+            支持终端控制字符: \\n 换行追加新行, \\r 原地覆盖当前行 (tqdm 进度条)。"""
             def __init__(self, emit, color=None):
                 self.emit = emit
                 self.color = color
@@ -57,27 +60,47 @@ class ClassStepRunner(QThread):
             def write(self, s):
                 if not s:
                     return
-                self._buffer += s
-                while "\n" in self._buffer:
-                    line, self._buffer = self._buffer.split("\n", 1)
-                    self.emit(line, self.color)
+                self._buffer += s.replace("\r\n", "\n")
+                while True:
+                    idx_r = self._buffer.find("\r")
+                    idx_n = self._buffer.find("\n")
+                    if idx_r == -1 and idx_n == -1:
+                        break
+                    if idx_n != -1 and (idx_r == -1 or idx_n < idx_r):
+                        seg, self._buffer = self._buffer.split("\n", 1)
+                        self.emit(seg, self.color, False)
+                    else:
+                        seg, self._buffer = self._buffer.split("\r", 1)
+                        if seg:  # 跳过 tqdm 行首单独的 \r
+                            self.emit(seg, self.color, True)
 
             def flush(self):
+                # flush 不结束当前行: tqdm 每次进度更新后都会调 fp.flush(),
+                # 半行内容留在 _buffer 里等下一个控制字符或运行结束
+                pass
+
+            def end(self):
+                """运行结束时调用: 把残留的半行作为一行输出。"""
                 if self._buffer:
-                    self.emit(self._buffer, self.color)
+                    self.emit(self._buffer, self.color, False)
                     self._buffer = ""
 
         old_stdout = sys.stdout
         old_stderr = sys.stderr
-        sys.stdout = _EmitStream(emit)
-        sys.stderr = _EmitStream(emit, "#ff6b6b")
+        out, err = _EmitStream(emit), _EmitStream(emit, "#ff6b6b")
+        sys.stdout, sys.stderr = out, err
         try:
             yield
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+            out.end()
+            err.end()
 
     def run(self):
+        # stdout 不是 tty 时 tqdm 按默认 80 列截断进度条; 加宽并预留日志
+        # 时间戳前缀的宽度, 让整条 bar + 速率/ETA 都能显示
+        os.environ.setdefault("COLUMNS", "140")
         exit_code = 0
         try:
             with self._capture_streams(self.log_text.emit):
@@ -85,7 +108,7 @@ class ClassStepRunner(QThread):
         except SystemExit as e:
             exit_code = e.code if isinstance(e.code, int) else 0
         except Exception as e:
-            self.log_text.emit(str(e), "#ff6b6b")
+            self.log_text.emit(str(e), "#ff6b6b", False)
             exit_code = 1
         self.finished_with_code.emit(exit_code)
 
@@ -149,12 +172,15 @@ class DashboardTab(QWidget):
         # 底部终端式日志: 显示各步骤的 stdout/stderr
         self._log = QPlainTextEdit()
         self._log.setReadOnly(True)
-        self._log.setFont(QFont("Consolas", 9))
+        self._log.setFont(QFont("Consolas", 11))
         self._log.setStyleSheet(
             "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4; "
             "border: 1px solid #3c3c3c; }")
         self._log.setMaximumBlockCount(500)
+        self._log.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._log.setPlaceholderText("步骤输出将显示在这里...")
+        self._log_progress = False   # 最后一行是否为 \r 进度行 (可被覆盖)
+        self._progress_stamp = ""    # 进度行的时间戳 (覆盖时保持不变)
         lay = QVBoxLayout(self)
         lay.addLayout(grid)
         lay.addWidget(self._log, stretch=1)
@@ -272,17 +298,49 @@ class DashboardTab(QWidget):
             return
         self._start_step(step_callable, btn, [self._root, out])
 
-    def _append_log(self, text, color=None):
-        """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。"""
+    def _insert_log_line(self, line, color, stamp):
+        """在日志末尾追加一行 (带时间戳, 可选 HTML 颜色)。"""
+        if color:
+            self._log.appendHtml('<span style="color:%s">[%s] %s</span>'
+                                 % (color, stamp, html.escape(line)))
+        else:
+            self._log.appendPlainText("[%s] %s" % (stamp, line))
+
+    def _overwrite_last_log_line(self, line, color):
+        """原地覆盖日志最后一行 (\\r 进度更新), 时间戳保持不变。"""
+        cur = self._log.textCursor()
+        cur.movePosition(QTextCursor.MoveOperation.End)
+        cur.movePosition(QTextCursor.MoveOperation.StartOfBlock,
+                         QTextCursor.MoveMode.KeepAnchor)
+        stamp = self._progress_stamp
+        if color:
+            cur.insertHtml('<span style="color:%s">[%s] %s</span>'
+                           % (color, stamp, html.escape(line)))
+        else:
+            cur.insertText("[%s] %s" % (stamp, line))
+
+    def _append_log(self, text, color=None, same_line=False):
+        """向底部终端日志追加一行/多行文本 (可选 HTML 颜色)。
+        same_line=True 表示 \\r 进度更新: 覆盖当前进度行 (tqdm 进度条),
+        只覆盖本行, 不碰已完成的普通行; \\rX\\n 则用 X 完成当前行后换行。"""
         if not text:
             return
         for line in text.rstrip("\n").split("\n"):
             stamp = datetime.now().strftime("%H:%M:%S")
-            if color:
-                self._log.appendHtml('<span style="color:%s">[%s] %s</span>'
-                                     % (color, stamp, line))
+            if same_line:
+                if self._log_progress:
+                    self._overwrite_last_log_line(line, color)
+                else:
+                    self._log_progress = True
+                    self._progress_stamp = stamp
+                    self._insert_log_line(line, color, stamp)
             else:
-                self._log.appendPlainText("[%s] %s" % (stamp, line))
+                if self._log_progress:
+                    # 终端语义: \rX\n = 用 X 完成当前进度行, 然后换行
+                    self._overwrite_last_log_line(line, color)
+                    self._log_progress = False
+                else:
+                    self._insert_log_line(line, color, stamp)
 
     def _start_step(self, step_callable, btn, args):
         """启动步骤, args 为传给可调用对象的参数列表。
