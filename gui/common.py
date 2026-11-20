@@ -17,7 +17,7 @@ from PyQt6.QtGui import (
     QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter,
     QBrush, QColor, QDrag, QPen, QPalette, QKeySequence, QFont, QShortcut,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QPointF, QRect, QRectF, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QPointF, QRect, QRectF, QTimer, QEvent
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 THUMB_SIZE = 256
 # Dolphin 配对鳍格高度: 与格宽保持 18:10, 上下两鳍图无缝相叠不留缝
