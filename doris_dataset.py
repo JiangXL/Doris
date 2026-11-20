@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 from datetime import datetime
+from PIL import Image
 
 import pandas as pd
 import numpy as np
@@ -1070,36 +1071,12 @@ class Dataset:
         return out
 
     # 9. 海豚配对: DL/DR 鳍配对
-    def _extra_dolphins(self):
-        """DOLPHINS.csv 中用户手工创建的空海豚名列表。"""
-        p = os.path.join(self.meta_dir, "DOLPHINS.csv")
-        if os.path.isfile(p):
-            try:
-                return list(pd.read_csv(p)["DolphinID"].dropna().astype(str))
-            except Exception:
-                pass
-        return []
-
-    def new_dolphin(self):
-        """创建空海豚 (名字顺延, 记入 DOLPHINS.csv 持久化), 返回名字。"""
-        names = {d[0] for d in self.dolphins()} | set(self._extra_dolphins())
-        nums = [int(m.group(1)) for n in names
-                for m in [re.match(r"Dph(\d+)$", n)] if m]
-        name = "Dph%03d" % (max(nums) + 1 if nums else 1)
-        extras = self._extra_dolphins()
-        extras.append(name)
-        pd.DataFrame({"DolphinID": extras}).to_csv(
-            os.path.join(self.meta_dir, "DOLPHINS.csv"), index=False)
-        self._invalidate_cache(["dolphins", "dolphin_groups"])
-        return name
-
     def dolphins(self, match_threshold=0.5):
         """[(name, dl_fid, dr_fid, dl_path, dr_path)]。
         配对关系存于 fin_df 的 DolphinID 列并写回 CSV:
         每个 DL FinID 一只海豚 (Dph001...); DR FinID 按与 DL 的最高
         相似度贪心配对 (FIN_SIMILARITY.npy, 每只 DR 最多配一只海豚),
         低于阈值的 DR FinID 也单独成海豚 (上格 DL 留空), 不丢任何 DR;
-        另有 DOLPHINS.csv 里用户手工创建的空海豚。
         鳍图取该 FinID 该侧 BestInShot 标记中 Clearness 最高的一张
         (无标记时回退到该侧全部鳍图)。"""
         key = ("dolphins", match_threshold)
@@ -1131,8 +1108,6 @@ class Dataset:
             n = dph_of(fid, "DR")
             if n:
                 pairs.setdefault(n, {})["dr"] = fid
-        for n in self._extra_dolphins():  # 用户创建的空海豚
-            pairs.setdefault(n, {})
         # 新名字顺延编号 (含已有和用户创建的名字)
         nums = [int(m.group(1)) for n in pairs
                 for m in [re.match(r"Dph(\d+)$", n)] if m]
@@ -1229,8 +1204,7 @@ class Dataset:
     def dolphin_groups(self):
         """DolphinID -> 该海豚全部鳍图路径 (按 DolphinID 排序)。
 
-        包含 FIN_METAINFO.csv 中有鳍图的海豚, 也包含 DOLPHINS.csv 中
-        用户手工创建的空海豚 (方便 Review 模式列出全部可编辑对象)。
+        包含 FIN_METAINFO.csv 中有鳍图的海豚。
         """
         key = "dolphin_groups"
         if key in self._cache:
@@ -1244,9 +1218,6 @@ class Dataset:
                 sorted_g = g.sort_values(by="Aspect")
                 groups[str(name)] = [p for p in sorted_g["fullpath"]
                                      if isinstance(p, str)]
-        # 补上空海豚 (无鳍图)
-        for name in self._extra_dolphins():
-            groups.setdefault(name, [])
         self._cache[key] = groups
         return groups
 
@@ -1541,7 +1512,6 @@ class Dataset:
         row = self.fin_df.loc[idx]
 
         try:
-            from PIL import Image
             img = Image.open(path)
         except Exception:
             import cv2
@@ -1661,7 +1631,6 @@ class Dataset:
                 next_identity = len(self.fin_df) + 1
 
         try:
-            from PIL import Image
             img = Image.open(path)
         except Exception:
             import cv2
@@ -1823,17 +1792,12 @@ class Dataset:
         """对单个裁剪鳍图提取深度特征向量 (numpy 1-D array)。"""
         if not os.path.isfile(crop_path):
             return None
-        if getattr(self, "_feat_extractor", None) is None:
-            from Step3_extract_fin_feature import FinFeatureExtractorGeneral
-            self._feat_extractor = FinFeatureExtractorGeneral()
-        extractor = self._feat_extractor
-        from PIL import Image
-        img = Image.open(crop_path).convert("RGB")
-        import torch
-        tensor = extractor.transform(img).unsqueeze(0)
-        with torch.no_grad():
-            feat = extractor.model(tensor.to(extractor.device)).cpu().numpy()
-        return feat.reshape(-1)
+        if getattr(self, "_deep_feat_extractor", None) is None:
+            from Step3_extract_fin_feature import FinDeepFeatureExtractor
+            self._deep_feat_extractor = FinDeepFeatureExtractor().feature_extractor
+        extractor = self._deep_feat_extractor
+        feat = extractor.extract([crop_path], batch_size=1)
+        return feat[0] if feat is not None and len(feat) else None
 
     def _expand_similarity_for_new_fin(self, new_feature):
         """新增一个鳍后, 同步扩展 FIN_DEEPFEATURES / FIN_SIMILARITY / FIN_CONNECTION。

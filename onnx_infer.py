@@ -331,7 +331,7 @@ class OnnxClassifier:
 
 
 class OnnxFeatureExtractor:
-    """MegaDescriptor 深度特征提取（ONNX）。输入输出语义与 torch 版一致：
+    """MegaDescriptor 深度特征提取（ONNX）。
     384 输入、ImageNet normalize，返回原始 embedding ndarray [N, D]。
     显存不足时批大小自动减半重试。"""
 

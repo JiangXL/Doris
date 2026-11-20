@@ -19,10 +19,12 @@ from .dolphin import DolphinTab, MatchPanel, CandidateList
 from .common import ImageGrid
 from resource_paths import resource_path
 
+DORIS_VERSION = "v0.2.4"
+
 class MainWindow(QMainWindow):
     def __init__(self, root):
         super().__init__()
-        self.setWindowTitle("Doris v0.2.4 — %s" % root)
+        self.setWindowTitle("Doris %s — %s" % (DORIS_VERSION, root))
         self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
         #self.resize(1280, 800)
 
@@ -100,7 +102,7 @@ class MainWindow(QMainWindow):
 
     def load(self, root):
         self.root = root
-        self.setWindowTitle("Doris v0.2.2 — %s" % root)
+        self.setWindowTitle("Doris %s — %s" % (DORIS_VERSION, root))
         meta_dir = os.path.join(root, "METAINFO")
         self._required_files = {
             "PHOTO_METAINFO.csv": os.path.join(meta_dir, "PHOTO_METAINFO.csv"),
