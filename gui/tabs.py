@@ -1212,6 +1212,9 @@ class GroupedTab(QWidget):
             self._shot_type_setter(shot_id, text)
         except Exception as e:
             QMessageBox.warning(self, "保存失败", str(e))
+            return
+        if self._on_moved is not None:
+            self._on_moved(self)  # 元数据已变, 刷新所有 tab (含 Low Quality 列表)
 
     def _on_empty_drop(self, paths):
         """Review 模式下把鳍图拖到侧边栏空白区域: 新建一个 FinID。"""
