@@ -57,13 +57,17 @@ def make_session(onnx_path, providers=None, intra_op_num_threads=None):
         # 避免 ORT 默认占满所有核导致流水线线程超订（CUDA 路径不需要设置）
         opts.intra_op_num_threads = int(intra_op_num_threads)
     try:
-        return ort.InferenceSession(onnx_path, sess_options=opts, providers=prov)
+        session = ort.InferenceSession(onnx_path, sess_options=opts, providers=prov)
+        print("Infer with ", session.get_providers())
+        return session
     except Exception:
         # CUDA 运行库缺失等场景下回退 CPU（ORT 部分版本直接抛异常而非降级）
         if 'CPUExecutionProvider' not in prov:
             raise
-        return ort.InferenceSession(onnx_path, sess_options=opts,
+        session = ort.InferenceSession(onnx_path, sess_options=opts,
                                     providers=['CPUExecutionProvider'])
+        print("Infer with ", session.get_providers())
+        return session
 
 
 def read_names_from_metadata(session, fallback=None):

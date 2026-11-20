@@ -139,7 +139,7 @@ class FinDeepFeatureExtractor:
         # 通用格式：特征矩阵 + 行对应的图片路径
         np.save(out_path + '.npy', features)
         metadata.to_csv(out_path + '.csv', columns=["PhotoName", "Path"], index=False)
-        print("Save", out_path + '.npy', '&', out_path + '.csv')
+        print("Save", out_path + '.npy', '\n&', out_path + '.csv')
 
 
 if __name__ == '__main__':

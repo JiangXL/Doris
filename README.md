@@ -6,6 +6,8 @@ Dolphin ReIdentify Scripts
 
 identify, OrignalImageName, Path, X, Y, W, H, AssumedAspect, ConfirmedAspect, Clearness, AssumedClear, ConfirmedClear,
 
+pipeline
+
 ### Exctra Feature from Fin 
 1. crop fin and classify fin aspect
 2. socre fin image quality 
