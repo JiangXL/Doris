@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QIcon, QPainter, QColor, QPen, QKeySequence, QFont, QBrush, QShortcut, QTextCursor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRect, QTimer
 
-from doris_dataset import Dataset
+from doris_dataset import Dataset, ASPECT_LABELS
 from .common import (
     ImageGrid, ThumbLoader, MIME_PATHS, THUMB_SIZE,
     ZoomableView, ImageViewerDialog,
@@ -413,7 +413,7 @@ class GroupListWidget(QListWidget):
 
     def contextMenuEvent(self, event):
         """右键点击列表项时发出信号; 点击空白处忽略。"""
-        if self.itemAt(event.position().toPoint()) is not None:
+        if self.itemAt(event.pos()) is not None:
             self.right_clicked.emit(event.globalPos())
             event.accept()
         else:
@@ -479,7 +479,8 @@ class GroupedTab(QWidget):
                  renamer=None, track_move_checkbox=False,
                  shot_type_setter=None, shot_info_provider=None,
                  box_editor=None, photo_type_setter=None, similar_mover=None,
-                 empty_drop_handler=None, dolphin_assigner=None, parent=None):
+                 empty_drop_handler=None, dolphin_assigner=None,
+                 fin_id_remover=None, aspect_mover=None, parent=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -505,14 +506,18 @@ class GroupedTab(QWidget):
         下可把代表鳍图拖放到另一张上, 合并两个 FinID (含对应 DolphinID)
         renamer: callable() -> dict; 给定后顶栏出现 "Rename ID" 按钮,
         把所有 FinID 重新编号为 Fin001..FinNNN (N=FinID 数量)
-        track_move_checkbox: True 时顶栏出现 "Move whole track" 复选框,
+        track_move_checkbox: True 时顶栏出现 "Operate whole Track" 复选框,
         默认勾选; Review 模式下侧边拖放勾选时移动同 track, 未勾选时只移动选中图
         shot_type_setter: callable(shot_id, shot_type); 给定后顶栏出现 ShotType
         下拉框, 供 Continuous Shots 页为整组连拍设置类型
         shot_info_provider: callable(shot_id) -> dict; 给定后顶栏显示该 shot
         第一张图的 DateTime/FocusLength35mm/Distance 信息
         photo_type_setter: callable(paths, photo_type); 给定后原图查看窗口右键
-        菜单出现 "Mark MISC", 将对应照片的 PhotoType 列写回 PHOTO_METAINFO.csv"""
+        菜单出现 "Mark MISC", 将对应照片的 PhotoType 列写回 PHOTO_METAINFO.csv
+        fin_id_remover: callable(paths, use_track) -> dict; 给定后侧边栏 "0" 组
+        与右键 Remove FinID 用它清除 FinID/DolphinID/SocialStructure
+        aspect_mover: callable(paths, label, use_track=False) -> dict; 给定后
+        右键网格出现 "Change Aspect" 子菜单 (Fin ID 页改部位)"""
         super().__init__(parent)
         self._mover = mover
         self._similar_mover = similar_mover
@@ -522,6 +527,8 @@ class GroupedTab(QWidget):
         self._on_moved = on_moved
         self._empty_drop_handler = empty_drop_handler
         self._dolphin_assigner = dolphin_assigner
+        self._fin_id_remover = fin_id_remover
+        self._aspect_mover = aspect_mover
         self._full_resolver = full_resolver
         self._full_boxes = full_boxes or {}
         self._labels = labels or {}
@@ -556,6 +563,8 @@ class GroupedTab(QWidget):
         self.group_list.setTextElideMode(Qt.TextElideMode.ElideNone)  # 不省略
         self.grid = ImageGrid()
         self.grid.set_box_editor(box_editor)
+        # 鳍图页 (有 full_resolver) 显示的是 fin 裁剪图: 大图查看器不提供 Add Fin
+        self.grid._allow_add_fin = full_resolver is None
         self.splitter.addWidget(self.group_list)
         self.splitter.addWidget(self.grid)
         self.splitter.setStretchFactor(1, 1)
@@ -618,9 +627,10 @@ class GroupedTab(QWidget):
                 self._rename_btn.clicked.connect(self._rename_fin_ids)
                 top.addWidget(self._rename_btn)
             if track_move_checkbox and self._track_mover is not None:
-                self._track_move_cb = QCheckBox("Move whole track")
+                self._track_move_cb = QCheckBox("Operate whole Track")
                 self._track_move_cb.setToolTip(
-                    "勾选后侧边拖放会同时移动同 ShotID+TrackIDInShot 的鳍图")
+                    "勾选后右键/拖放操作 (移动 / Split to New FinID / "
+                    "Remove FinID) 会同时作用于同 ShotID+TrackIDInShot 的鳍图")
                 self._track_move_cb.setChecked(True)
                 top.addWidget(self._track_move_cb)
             self._shot_type_cb = None
@@ -650,7 +660,9 @@ class GroupedTab(QWidget):
         self.group_list.paths_dropped.connect(self._on_drop)
         if self._empty_drop_handler is not None:
             self.group_list.set_accept_empty_drop(True)
-            self.group_list.empty_area_dropped.connect(self._on_empty_drop)
+            self.group_list.empty_area_dropped.connect(
+                lambda paths: self._on_empty_drop(
+                    paths, use_track=self._use_track_for_exclude()))
         if self._dolphin_assigner is not None:
             self.group_list.right_clicked.connect(self._on_group_menu)
         # 无 mover 的页不接受拖放
@@ -956,8 +968,8 @@ class GroupedTab(QWidget):
             self._on_drop(other, gname, use_track=False, mover=mover)
 
     def _use_track_for_exclude(self):
-        """排除操作是否扩展到同 track: Review Mode 看 'Move whole track'
-        复选框; Match Mode 复选框禁用, 默认扩展同 track。"""
+        """排除/拆分/移除操作是否扩展到同 track: Review Mode 看
+        'Operate whole Track' 复选框; Match Mode 复选框禁用, 默认扩展同 track。"""
         if self._track_move_cb is not None:
             return self._track_move_cb.isChecked()
         return True
@@ -981,7 +993,7 @@ class GroupedTab(QWidget):
         moved = {}
         try:
             if from_cur:
-                moved = fn_cur(from_cur, gname, use_track=use_track) or {}
+                moved = fn_cur(from_cur, use_track=use_track) or {}
             if from_sim:
                 fn_sim(from_sim, gname)
         except Exception as e:
@@ -1016,11 +1028,48 @@ class GroupedTab(QWidget):
                            "(BestInFin=True, 同 FinID 其它鳍自动置 False)")
             act.triggered.connect(self._mark_best_selected)
         if self._exclude is not None:
-            act = menu.addAction("Exclude (Delete)")
-            act.setToolTip("把选中的鳍图移入排除区 (Review/Match 模式均可用)")
-            act.triggered.connect(self._exclude_selected)
+            act = menu.addAction("Split to New FinID")
+            act.setToolTip("把选中的鳍图 (按 'Operate whole Track' 扩展到同 "
+                           "track) 拆分到全新 FinID, 清除原 DolphinID/"
+                           "SocialStructure, 并与来源 FinID 相似度置 0")
+            act.triggered.connect(self._new_fin_id_selected)
+            act = menu.addAction("Remove FinID")
+            act.setToolTip("移除选中鳍图 (按 'Operate whole Track' 扩展到同 "
+                           "track) 的 FinID/DolphinID/SocialStructure (移入 "
+                           "'0' 组), 并与来源 FinID 相似度置 0")
+            act.triggered.connect(self._delete_fin_id_selected)
+        if self._aspect_mover is not None:
+            sub = menu.addMenu("Change Aspect")
+            sub.setToolTip("把选中鳍图改为指定部位 (按 'Operate whole Track' "
+                           "扩展到同 track); 换部位的鳍脱离原海豚/社群")
+            for label in ASPECT_LABELS.values():
+                act = sub.addAction(label)
+                act.triggered.connect(
+                    lambda _=False, l=label: self._change_aspect_selected(l))
         if not menu.isEmpty():
             menu.exec(pos)
+
+    def _change_aspect_selected(self, label):
+        """右键 Change Aspect: 把选中鳍图改为指定部位 (按 'Operate whole
+        Track' 复选框决定是否扩展到同 track)。"""
+        if self._aspect_mover is None:
+            return
+        items = self.grid.selectedItems()
+        if not items:
+            return
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
+        try:
+            moved = self._aspect_mover(paths, label,
+                                       use_track=self._use_track_for_exclude())
+        except Exception as e:
+            QMessageBox.warning(self, "修改部位失败", str(e))
+            return
+        if not moved:
+            return
+        if self._on_moved is not None:
+            self._on_moved(self)  # 元数据已变, 刷新所有 tab
+        else:
+            self._on_group(None)
 
     def _mark_best_selected(self):
         """把网格中选中的鳍图标记为该 FinID 的最佳并刷新标注。"""
@@ -1218,14 +1267,38 @@ class GroupedTab(QWidget):
         if self._on_moved is not None:
             self._on_moved(self)  # 元数据已变, 刷新所有 tab (含 Low Quality 列表)
 
-    def _on_empty_drop(self, paths):
-        """Review 模式下把鳍图拖到侧边栏空白区域: 新建一个 FinID。"""
+    def _new_fin_id_selected(self):
+        """右键 Split to New FinID: 选中鳍图拆分到全新 FinID, 等同拖到侧边栏
+        空白区域 (按 'Operate whole Track' 复选框决定是否扩展到同 track)。"""
+        if self._empty_drop_handler is None:
+            return
+        items = self.grid.selectedItems()
+        if not items:
+            return
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
+        self._on_empty_drop(paths, use_track=self._use_track_for_exclude())
+
+    def _delete_fin_id_selected(self):
+        """右键 Remove FinID: 移除选中鳍图的 FinID/DolphinID/SocialStructure,
+        等同拖入侧边栏 '0' 组 (按 'Operate whole Track' 复选框决定是否扩展)。"""
+        if self._mover is None:
+            return
+        items = self.grid.selectedItems()
+        if not items:
+            return
+        paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
+        self._groups.setdefault("0", [])  # 保证 "0" 组存在可接收
+        self._on_drop(paths, "0", use_track=self._use_track_for_exclude())
+
+    def _on_empty_drop(self, paths, use_track=False):
+        """Review 模式下把鳍图拖到侧边栏空白区域 (或右键 New FinID):
+        新建一个 FinID, use_track=True 时扩展到同 track。"""
         if self._empty_drop_handler is None:
             return
         if self._overview or self._best_only:
             return
         try:
-            moved = self._empty_drop_handler(paths) or {}
+            moved = self._empty_drop_handler(paths, use_track=use_track) or {}
         except Exception as e:
             QMessageBox.warning(self, "新建 FinID 失败", str(e))
             return
@@ -1242,9 +1315,10 @@ class GroupedTab(QWidget):
                             boxes=self._boxes)
 
     def _on_drop(self, paths, target_name, use_track=None, mover=None):
-        """use_track=None 时：优先看 "Move whole track" 复选框（Review 模式）;
+        """use_track=None 时：优先看 "Operate whole Track" 复选框（Review 模式）;
         否则跟随最佳复选框 (Match 模式三栏)。勾选后侧边拖放改同 track 的鳍。
-        mover 显式传入时优先使用 (例如 Match 模式相似区 -> 上方用 similar_mover)。"""
+        mover 显式传入时优先使用 (例如 Match 模式相似区 -> 上方用 similar_mover)。
+        目标为 "0" (未分类) 时改走 fin_id_remover (Remove FinID)。"""
         if mover is None:
             if use_track is None:
                 if self._track_move_cb is not None:
@@ -1256,7 +1330,12 @@ class GroupedTab(QWidget):
         if mover is None or target_name not in self._groups:
             return
         try:
-            moved = mover(paths, target_name)
+            if str(target_name) == "0" and self._fin_id_remover is not None:
+                # "0" = 未分类: 清除 FinID/DolphinID/SocialStructure 并与
+                # 来源 FinID 相似度置 0 (Remove FinID)
+                moved = self._fin_id_remover(paths, use_track=bool(use_track))
+            else:
+                moved = mover(paths, target_name)
         except Exception as e:
             QMessageBox.warning(self, "移动失败", str(e))
             return

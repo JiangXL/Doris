@@ -206,20 +206,26 @@ class MainWindow(QMainWindow):
                 box_editor=self._edit_box
                 if title in fin_tabs or title == "Continuous Shots" else None,
                 photo_type_setter=ds.set_photo_type,
-                exclude=(ds.exclude_to_new_fin_id, ds.exclude_fin_id_pair)
+                exclude=(ds.split_to_new_fin_id, ds.exclude_fin_id_pair)
                 if title == "Fin ID" else None,
                 overview_provider=ds.fin_id_previews
                 if title == "Fin ID" else None,
                 merger=ds.merge_fin_paths if title == "Fin ID" else None,
                 similar_mover=ds.move_to_fin_id
                 if title == "Fin ID" else None,
-                empty_drop_handler=ds.move_to_new_fin_id
+                empty_drop_handler=ds.split_to_new_fin_id
+                if title == "Fin ID" else None,
+                fin_id_remover=ds.remove_fin_id
+                if title == "Fin ID" else None,
+                aspect_mover=ds.move_aspect
                 if title == "Fin ID" else None,
                 dolphin_assigner=self._assign_dolphin_to_fin_id
                 if title == "Fin ID" else None)
             groups = fn()
-            if title == "Fin ID":  # 只显示图片数大于 1 的个体
+            if title == "Fin ID":  # 只显示图片数大于 0 的个体; "0" 未分类组始终保留
                 groups = {k: v for k, v in groups.items() if len(v) > 0}
+                if groups:
+                    groups.setdefault("0", [])
             if groups:
                 boxes = shot_boxes if title == "Continuous Shots" else None
                 tab.set_groups(groups, boxes=boxes)
@@ -640,8 +646,9 @@ class MainWindow(QMainWindow):
         ds = self.ds
         fin_tabs = {"Fin Aspect", "Fin Quality", "Fin ID"}
         groups = fn()
-        if title == "Fin ID":  # 只显示图片数大于 1 的个体
-            groups = {k: v for k, v in groups.items() if len(v) > 1}
+        if title == "Fin ID":  # 只显示图片数大于 1 的个体; "0" 未分类组始终保留
+            groups = {k: v for k, v in groups.items() if len(v) > 1 or k == "0"}
+            groups.setdefault("0", [])
             tab._best_mark = ds.fin_best_marks().__contains__
             tab._clear_mark = ds.fin_clear_marks().__contains__
         if not groups:

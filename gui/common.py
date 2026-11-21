@@ -428,6 +428,7 @@ class ImageGrid(QListWidget):
         self._full_open_best = None
         self._full_open_move = None
         self._box_editor = None
+        self._allow_add_fin = True  # 大图查看器是否提供 Add Fin (fin 裁剪图网格关)
         self._best_in_fin = set()
         # 懒加载: 滚动/缩放后延迟 120ms 只加载可视区域的缩略图
         self._lazy_timer = QTimer(self)
@@ -702,7 +703,8 @@ class ImageGrid(QListWidget):
                                 on_exclude=self._full_open_exclude,
                                 on_best=self._full_open_best,
                                 on_move=self._full_open_move,
-                                box_editor=self._box_editor)
+                                box_editor=self._box_editor,
+                                allow_add_fin=self._allow_add_fin)
         dlg.exec()
 class _HandleItem(QGraphicsRectItem):
     """ResizableBoxItem 的 8 个拖拽把手 (角 + 边中点)。"""
@@ -939,7 +941,7 @@ class ImageViewerDialog(QDialog):
 
     def __init__(self, paths, index, parent=None, boxes=None, labels=None,
                  on_exclude=None, on_best=None, on_misc=None, on_move=None,
-                 box_editor=None):
+                 box_editor=None, allow_add_fin=True):
         super().__init__(parent)
         self._paths = paths
         self._index = index
@@ -950,6 +952,7 @@ class ImageViewerDialog(QDialog):
         self._on_misc = on_misc
         self._on_move = on_move
         self._box_editor = box_editor
+        self._allow_add_fin = allow_add_fin
         self._edit_mode = False
         self._edit_items = []
         self._edit_original_rects = []
@@ -1181,7 +1184,8 @@ class ImageViewerDialog(QDialog):
             self.view.zoom(1.25)          # =/+ 放大
         elif event.key() in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
             self.view.zoom(0.8)           # - 缩小
-        elif event.key() == Qt.Key.Key_A and self._box_editor is not None:
+        elif event.key() == Qt.Key.Key_A and self._box_editor is not None \
+                and self._allow_add_fin:
             self._enter_add_mode()
             event.accept()
         elif event.key() == Qt.Key.Key_W and \
@@ -1227,10 +1231,11 @@ class ImageViewerDialog(QDialog):
                 if boxes:
                     act = menu.addAction("Edit boxes")
                     act.triggered.connect(self._enter_edit_mode)
-                act = menu.addAction("Add fin (A)")
-                act.triggered.connect(self._enter_add_mode)
+                if self._allow_add_fin:
+                    act = menu.addAction("Add fin (A)")
+                    act.triggered.connect(self._enter_add_mode)
             if self._on_exclude is not None:
-                act = menu.addAction("Exclude (Delete)")
+                act = menu.addAction("Split to New FinID(Del)")
                 act.triggered.connect(
                     lambda: self._on_exclude([self._paths[self._index]])
                     or self.close())

@@ -43,8 +43,13 @@ class Dataset:
             if "Aspect" in self.fin_df.columns:
                 self.fin_df.replace({"Aspect":"Others"}, "MISC", inplace=True)
         if "PhotoName" in self.photo_df.columns:
-            self.photo_df = self.photo_df.sort_values(by="PhotoName") 
+            self.photo_df = self.photo_df.sort_values(by="PhotoName")
         self._cache = {}
+        # 相似度基线 (FIN_SIMILARITY.npy) 与可编辑关联矩阵
+        # (FIN_CONNECTION.npy), 由 _ensure_matrices() 惰性加载一次后常驻
+        self.similarity_matrix = None
+        self.connection_matrix = None
+        self._mat_loaded = False
 
     def _invalidate_cache(self, keys=None):
         """清空只读视图缓存; keys=None 时全部清空。"""
@@ -558,30 +563,35 @@ class Dataset:
             out[str(dph)] = ", ".join(sorted(vals)) if vals else ""
         return out
 
-    def _similarity_matrix(self):
-        """懒加载并缓存 FIN_CONNECTION.npy (优先) 或 FIN_SIMILARITY.npy。
-        与 fin_df 行对齐。首次只有 FIN_SIMILARITY 时, 复制为 FIN_CONNECTION。"""
-        if getattr(self, "_sim_loaded", False):
-            return self._sim
-        self._sim_loaded = True
-        self._sim = None
+    def _ensure_matrices(self):
+        """惰性加载 (只一次) FIN_SIMILARITY.npy / FIN_CONNECTION.npy 为实例成员,
+        与 fin_df 行对齐。首次只有 FIN_SIMILARITY 时, 复制 baseline 作为可编辑的
+        CONNECTION。shape 与 fin_df 行数不符 (或文件缺失) 时对应成员为 None。
+        返回 self.connection_matrix (各读取方的消费对象)。"""
+        if self._mat_loaded:
+            return self.connection_matrix
+        self._mat_loaded = True
         conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
         sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
-        target = conn_file
-        if not os.path.isfile(conn_file):
-            target = sim_file
-            if os.path.isfile(sim_file):
-                # 首次使用: 复制 baseline 作为可编辑的 CONNECTION
-                shutil.copy2(sim_file, conn_file)
-                target = conn_file
-        if os.path.isfile(target):
+        if not os.path.isfile(conn_file) and os.path.isfile(sim_file):
+            # 首次使用: 复制 baseline 作为可编辑的 CONNECTION
+            shutil.copy2(sim_file, conn_file)
+        n = len(self.fin_df)
+        if os.path.isfile(sim_file):
             try:
-                sim = np.load(target)
-                if sim.shape[0] == len(self.fin_df):
-                    self._sim = sim
+                m = np.load(sim_file)
+                if m.shape[0] == n:
+                    self.similarity_matrix = m
             except Exception:
                 pass
-        return self._sim
+        if os.path.isfile(conn_file):
+            try:
+                m = np.load(conn_file)
+                if m.shape[0] == n:
+                    self.connection_matrix = m
+            except Exception:
+                pass
+        return self.connection_matrix
 
     def similar_fins(self, group, threshold=0.4):
         """与当前 FinID 两两相似度 > threshold 的其它个体鳍图 (同 aspect)。
@@ -592,7 +602,7 @@ class Dataset:
             return self._cache[key]
         df = self.fin_df
         m = re.match(r"^(Fin\d+)$", group or "")
-        sim = self._similarity_matrix()
+        sim = self._ensure_matrices()
         if not m or df.empty or "FinID" not in df.columns or sim is None:
             self._cache[key] = ([], {})
             return [], {}
@@ -632,10 +642,42 @@ class Dataset:
         self._cache[key] = (paths, labels)
         return paths, labels
 
-    #  FinID 总览: 每个个体一张代表鳍图 (最清晰的)
+    #  代表图选择: BestInFin > BestInShot > 最清晰 (Overview/海豚页/候选栏共用)
+    @staticmethod
+    def _rep_fin_row(g):
+        """从一组鳍行 (fin_df 子集, 非空) 中选代表图行:
+        BestInFin 标记优先, 其次 BestInShot 标记, 再取 Clearness 最高,
+        最后回退首行。"""
+        if "BestInFin" in g.columns:
+            m = g["BestInFin"].astype(str).str.lower().isin(("true", "1"))
+            if m.any():
+                g = g[m]
+            elif "BestInShot" in g.columns:
+                m = g["BestInShot"].astype(str).str.lower().isin(("true", "1"))
+                if m.any():
+                    g = g[m]
+        elif "BestInShot" in g.columns:
+            m = g["BestInShot"].astype(str).str.lower().isin(("true", "1"))
+            if m.any():
+                g = g[m]
+        if "Clearness" in g.columns and g["Clearness"].notna().any():
+            return g.loc[g["Clearness"].idxmax()]  # 最清晰的一张
+        return g.iloc[0]
+
+    def _rep_pos(self, mask):
+        """布尔 mask (对齐 fin_df 行) 内代表鳍的行位置 (位置对齐相似度矩阵)。
+        代表鳍按 _rep_fin_row 规则选; mask 为空返回 None。"""
+        g = self.fin_df[mask]
+        if g.empty:
+            return None
+        row = self._rep_fin_row(g)
+        i = g.index.get_loc(row.name)
+        return int(np.flatnonzero(mask)[i])
+
+    #  FinID 总览: 每个个体一张代表鳍图
     def fin_id_previews(self):
         """返回 (paths, labels): 每个 FinID 一张代表图 + 'Fin001 (n)' 角标。
-        代表图优先取 BestInShot 标记中 Clearness 最高的一张 (与 Dolphin 页同规则)。"""
+        代表图按 _rep_fin_row 规则选 (BestInFin > BestInShot > 最清晰)。"""
         df = self.fin_df
         if df.empty or "FinID" not in df.columns \
                 or "fullpath" not in df.columns:
@@ -644,15 +686,8 @@ class Dataset:
         for fid, g in df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
             if fid == "0":
                 continue  # 0 = 未分类
-            n = len(g)  # 角标数量按全部鳍图计, 不受 BestInShot 筛选影响
-            if "BestInShot" in g.columns:  # 优先在 BestInShot 标记里选
-                m = g["BestInShot"].astype(str).str.lower().isin(("true", "1"))
-                if m.any():
-                    g = g[m]
-            if "Clearness" in g.columns and g["Clearness"].notna().any():
-                rep = g.loc[g["Clearness"].idxmax()]  # 最清晰的一张
-            else:
-                rep = g.iloc[0]
+            n = len(g)  # 角标数量按全部鳍图计, 不受标记筛选影响
+            rep = self._rep_fin_row(g)
             p = rep["fullpath"]
             paths.append(p)
             labels[p] = "%s (%d)" % (fid, n)
@@ -1087,8 +1122,8 @@ class Dataset:
         每个 DL FinID 一只海豚 (Dph001...); DR FinID 按与 DL 的最高
         相似度贪心配对 (FIN_SIMILARITY.npy, 每只 DR 最多配一只海豚),
         低于阈值的 DR FinID 也单独成海豚 (上格 DL 留空), 不丢任何 DR;
-        鳍图取该 FinID 该侧 BestInShot 标记中 Clearness 最高的一张
-        (无标记时回退到该侧全部鳍图)。"""
+        鳍图取该 FinID 该侧代表图 (_rep_fin_row: BestInFin > BestInShot >
+        最清晰)。"""
         key = ("dolphins", match_threshold)
         if key in self._cache:
             return self._cache[key]
@@ -1130,33 +1165,30 @@ class Dataset:
                        "DolphinID"] = name
                 pairs[name] = {"dl": fid, "dr": None}
                 changed = True
-        # 未配对的 DR FinID: 先按与 DL 的最高相似度贪心配对
+        # 未配对的 DR FinID: 按与 DL 代表鳍的相似度贪心配对 (双方各只取代表鳍)
         unmatched_dr = [f for f in sub[sub["Aspect"] == "DR"]["FinID"].unique()
                         if dph_of(f, "DR") is None]
         mismatch = self._mismatch_pairs()  # 用户确认过的不匹配对, 不再自动重配
-        sim = self._similarity_matrix()
+        sim = self._ensure_matrices()
         used_dr = set()
         if sim is not None and unmatched_dr:
             fids = df["FinID"].to_numpy()
             clss = df["Aspect"].to_numpy()
 
-            def rows_of(fid, cls):
-                return np.where((fids == fid) & (clss == cls))[0]
-
             cands = []
             for name, d in pairs.items():
                 if d.get("dl") is None or d.get("dr") is not None:
                     continue
-                ia = rows_of(d["dl"], "DL")
-                if not len(ia):
+                ia = self._rep_pos((fids == d["dl"]) & (clss == "DL"))
+                if ia is None:
                     continue
                 dl_key = self._fid_key(d["dl"])
                 for dr in unmatched_dr:
                     if (dl_key, self._fid_key(dr)) in mismatch:
                         continue
-                    ib = rows_of(dr, "DR")
-                    if len(ib):
-                        cands.append((float(sim[np.ix_(ia, ib)].max()),
+                    ib = self._rep_pos((fids == dr) & (clss == "DR"))
+                    if ib is not None:
+                        cands.append((float(sim[ia, ib]),
                                       name, dr))
             cands.sort(key=lambda c: -c[0])
             used_dl = set()
@@ -1187,22 +1219,7 @@ class Dataset:
                 .dropna(subset=["fullpath"])
             if g.empty:
                 return None
-            if "BestInFin" in g.columns:  # 优先在 BestInFin 标记里选
-                m = g["BestInFin"].astype(str).str.lower().isin(("true", "1"))
-                if m.any():
-                    g = g[m]
-                else:
-                    if "BestInShot" in g.columns:  # 其次在 BestInShot 标记里选
-                        m = g["BestInShot"].astype(str).str.lower().isin(("true", "1"))
-                        if m.any():
-                            g = g[m]
-            elif( "BestInShot" in g.columns):  # 其次在 BestInShot 标记里选
-                m = g["BestInShot"].astype(str).str.lower().isin(("true", "1"))
-                if m.any():
-                    g = g[m]
-            if "Clearness" in g.columns and g["Clearness"].notna().any():
-                return g.loc[g["Clearness"].idxmax(), "fullpath"]
-            return g["fullpath"].iloc[0]
+            return self._rep_fin_row(g)["fullpath"]
 
         out = [(name, d.get("dl"), d.get("dr"),
                 best(d["dl"], "DL") if d.get("dl") is not None else None,
@@ -1399,64 +1416,47 @@ class Dataset:
         self._save_csv(df, "FIN_METAINFO.csv")
         return int(mask.sum())
 
-    def dolphin_candidates(self, fid, cls, threshold=0.3, limit=30):
+    def dolphin_candidates(self, fid, cls, threshold=0.1, limit=30):
         """与 (fid, cls) 鳍最相似的异侧候选鳍 (Match Mode 候选栏)。
-        返回 (fids, paths, labels): 每个候选 FinID 取 BestInShot 中最清晰
-        一张代表图 (fin 裁剪图), labels = 'FinIDx sim=0.83' (path 为键),
-        按相似度降序。候选图已是 fin 裁剪, 不叠加鳍框。"""
+        每个 FinID 只由唯一代表鳍 (_rep_fin_row: BestInFin > BestInShot >
+        最清晰) 参与比较与展示, 同 FinID 其余鳍不参与。
+        返回 (fids, paths, labels): 每个候选 FinID 的代表图 (fin 裁剪图),
+        labels = 'FinIDx sim=0.83' (path 为键), 按代表鳍间相似度降序。
+        候选图已是 fin 裁剪, 不叠加鳍框。"""
         df = self.fin_df
-        sim = self._similarity_matrix()
+        sim = self._ensure_matrices()
         if df.empty or sim is None or "FinID" not in df.columns \
                 or "Aspect" not in df.columns:
             return [], [], {}
         other = "DR" if cls == "DL" else "DL"
+        fidk = self._fid_key(fid)
         fids = df["FinID"].to_numpy()
         clss = df["Aspect"].to_numpy()
         keys = pd.Series(fids).map(self._fid_key).to_numpy()
-        cur = np.where((keys == self._fid_key(fid)) & (clss == cls))[0]
-        if not len(cur):
+        # 当前 FinID 该侧的代表鳍 (唯一参与比较的行)
+        i_rep = self._rep_pos((keys == fidk) & (clss == cls))
+        if i_rep is None:
             return [], [], {}
-        # 每个候选鳍与当前 FinID 各鳍的最大相似度 (只看异侧的行)
-        best = np.full(len(df), -1.0)
-        for i in cur:
-            best = np.maximum(best, np.where(clss == other, sim[i], -1.0))
-        scores = {}  # 候选 FinID 键 -> 最高相似度 (每 FinID 只取一次)
-        for j in np.argsort(-best):
-            if best[j] <= threshold:
-                break
-            if clss[j] != other or pd.isna(fids[j]) or keys[j] == "0":
+        # 每个异侧 FinID 的代表鳍与 i_rep 的单点相似度
+        scores = {}  # 候选 FinID 键 -> 代表鳍间相似度
+        reps = {}    # 候选 FinID 键 -> 代表图路径
+        o_mask = (clss == other) & pd.notna(fids) \
+            & df["fullpath"].notna().to_numpy()
+        for k, g in df[o_mask].groupby(keys[o_mask], sort=False):
+            if k == "0" or k == fidk:
                 continue
-            k = keys[j]
-            if k not in scores:
-                scores[k] = float(best[j])
+            j_rep = self._rep_pos(o_mask & (keys == k))
+            if j_rep is None:
+                continue
+            s = float(sim[i_rep, j_rep])
+            if s > threshold:
+                scores[k] = s
+                reps[k] = self._rep_fin_row(g)["fullpath"]
             if len(scores) >= limit:
                 break
         out_fids, paths, labels = [], [], {}
         for k, s in sorted(scores.items(), key=lambda kv: -kv[1]):
-            g = df[(keys == k) & (clss == other)] \
-                .dropna(subset=["fullpath"])
-            if g.empty:
-                continue
-            # 候选代表图优先级: BestInFin > BestInShot 中最清晰 > 任意最清晰
-            if "BestInFin" in g.columns:
-                m = g["BestInFin"].astype(str).str.lower() \
-                    .isin(("true", "1"))
-                if m.any():
-                    g = g[m]
-                elif "BestInShot" in g.columns:
-                    m = g["BestInShot"].astype(str).str.lower() \
-                        .isin(("true", "1"))
-                    if m.any():
-                        g = g[m]
-            elif "BestInShot" in g.columns:
-                m = g["BestInShot"].astype(str).str.lower() \
-                    .isin(("true", "1"))
-                if m.any():
-                    g = g[m]
-            if "Clearness" in g.columns and g["Clearness"].notna().any():
-                p = g.loc[g["Clearness"].idxmax(), "fullpath"]
-            else:
-                p = g["fullpath"].iloc[0]
+            p = reps[k]
             out_fids.append(k)
             paths.append(p)
             labels[p] = "%s sim=%.2f" % (k, s)
@@ -1850,19 +1850,22 @@ class Dataset:
         self._replace_similarity_row(idx, np.asarray(feat).reshape(1, -1))
 
     def _replace_similarity_row(self, idx, f_new):
-        """替换第 idx 个鳍的特征向量, 重算相似度/关联矩阵的第 idx 行/列。"""
+        """替换第 idx 个鳍的特征向量, 重算相似度/关联矩阵的第 idx 行/列
+        (就地更新常驻成员 similarity_matrix / connection_matrix 并持久化)。"""
         feat_file = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.npy")
         sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
         conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
-        if not os.path.isfile(feat_file) or not os.path.isfile(sim_file):
+        if not os.path.isfile(feat_file):
             return
         if not hasattr(self, "_feat_lock"):
             self._feat_lock = threading.Lock()
         with self._feat_lock:
+            if self._ensure_matrices() is None \
+                    or self.similarity_matrix is None:
+                return
             features = np.load(feat_file)
-            sim = np.load(sim_file)
-            conn = np.load(conn_file) \
-                if os.path.isfile(conn_file) else sim.copy()
+            sim = self.similarity_matrix
+            conn = self.connection_matrix
             N = len(features)
             if not (0 <= idx < N) or sim.shape != (N, N):
                 return
@@ -1903,7 +1906,6 @@ class Dataset:
             np.save(feat_file, features)
             np.save(sim_file, sim)
             np.save(conn_file, conn)
-        self._sim = conn
         self._invalidate_cache()
 
     def _expand_similarity_for_new_fin(self, new_feature):
@@ -1925,10 +1927,12 @@ class Dataset:
         conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
         if not os.path.isfile(feat_file) or not os.path.isfile(sim_file):
             return
+        if self._ensure_matrices() is None or self.similarity_matrix is None:
+            return
 
         old_features = np.load(feat_file)
-        old_sim = np.load(sim_file)
-        old_conn = np.load(conn_file) if os.path.isfile(conn_file) else old_sim.copy()
+        old_sim = self.similarity_matrix
+        old_conn = self.connection_matrix
         N = len(old_features)
         f_new = np.asarray(new_feature).reshape(1, -1)
 
@@ -1998,7 +2002,8 @@ class Dataset:
         else:
             new_row.to_csv(csv_path, index=False)
 
-        self._sim = new_conn
+        self.similarity_matrix = new_sim
+        self.connection_matrix = new_conn
         self._invalidate_cache()
 
     # ------------------------------------------------------------------
@@ -2036,37 +2041,27 @@ class Dataset:
                 self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return moved
 
-    def move_aspect(self, paths, group):
-        """改部位类别: 只更新 fin_df 的 aspect 列。"""
+    def move_aspect(self, paths, group, use_track=False):
+        """改部位类别: 更新 fin_df 的 Aspect 列。use_track=True 时同
+        ShotID+TrackIDInShot 的鳍一起改。部位发生变化的鳍同时清除
+        DolphinID/SocialStructure (换了部位即脱离原海豚/社群); 已是目标部位
+        的鳍完全不动。返回实际改动的 {path: path}。"""
         cls = {v: k for k, v in ASPECT_LABELS.items()}.get(group, group)
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        self.fin_df.loc[mask, "Aspect"] = cls
-        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
-        return {p: p for p in paths}
-
-    def move_track_aspect(self, paths, group):
-        """改部位类别: 同 ShotID+TrackIDInShot 的鳍一起更新 Aspect。"""
-        cls = {v: k for k, v in ASPECT_LABELS.items()}.get(group, group)
-        mask = self.fin_df["fullpath"].isin(paths)
-        if not mask.any():
+        if use_track:
+            mask = self._extend_mask_to_tracks(mask)
+        changed = mask & (self.fin_df["Aspect"].astype(str) != str(cls))
+        if not changed.any():
             return {}
-        if "TrackIDInShot" in self.fin_df.columns \
-                and "ShotID" in self.fin_df.columns:
-            key_rows = self.fin_df.loc[
-                mask, ["ShotID", "TrackIDInShot"]].dropna()
-            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
-            if pairs:
-                row_keys = pd.Series(
-                    list(zip(self.fin_df["ShotID"],
-                             self.fin_df["TrackIDInShot"])),
-                    index=self.fin_df.index)
-                mask = mask | row_keys.isin(pairs)
-        self.fin_df.loc[mask, "Aspect"] = cls
+        self.fin_df.loc[changed, "Aspect"] = cls
+        if "DolphinID" in self.fin_df.columns:
+            self.fin_df.loc[changed, "DolphinID"] = pd.NA
+        if "SocialStructure" in self.fin_df.columns:
+            self.fin_df.loc[changed, "SocialStructure"] = pd.NA
         self._save_csv(self.fin_df, "FIN_METAINFO.csv")
-        moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
-        return {p: p for p in moved_paths}
+        return {p: p for p in self.fin_df.loc[changed, "fullpath"].dropna()}
 
     def move_blur(self, paths, group):
         """改质量分组: 更新 Clear / clear 列 (True=Clear, False=Blur, 空=Mid)。"""
@@ -2168,9 +2163,15 @@ class Dataset:
 
     def _assign_fin_id_to_mask(self, mask, fid, sync_dolphin=True):
         """把 mask 选中的行设为 fid; sync_dolphin=True 时按目标 FinID
-        同步/清除 DolphinID。写回 CSV。返回 {path: path} 的被移动映射。"""
+        同步/清除 DolphinID。fid 为 "0" (未分类) 时同时清除 DolphinID 和
+        SocialStructure。写回 CSV。返回 {path: path} 的被移动映射。"""
         self.fin_df.loc[mask, "FinID"] = fid
-        if sync_dolphin and "DolphinID" in self.fin_df.columns:
+        if fid == "0":
+            if "DolphinID" in self.fin_df.columns:
+                self.fin_df.loc[mask, "DolphinID"] = pd.NA
+            if "SocialStructure" in self.fin_df.columns:
+                self.fin_df.loc[mask, "SocialStructure"] = pd.NA
+        elif sync_dolphin and "DolphinID" in self.fin_df.columns:
             fin_mask = self.fin_df["FinID"] == fid
             target_mask = fin_mask & ~mask
             target_dph = self.fin_df.loc[
@@ -2183,49 +2184,55 @@ class Dataset:
         moved_paths = self.fin_df.loc[mask, "fullpath"].dropna()
         return {p: p for p in moved_paths}
 
+    def _extend_mask_to_tracks(self, mask):
+        """把 fin_df 的布尔 mask 扩展到同 track (ShotID + TrackIDInShot)
+        的所有行 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)。"""
+        df = self.fin_df
+        if "TrackIDInShot" not in df.columns \
+                or "ShotID" not in df.columns:
+            return mask
+        key_rows = df.loc[mask, ["ShotID", "TrackIDInShot"]].dropna()
+        pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
+        if not pairs:
+            return mask
+        row_keys = pd.Series(
+            list(zip(df["ShotID"], df["TrackIDInShot"])), index=df.index)
+        return mask | row_keys.isin(pairs)
+
     def move_track_to_fin_id(self, paths, group):
         """改个体分组 (勾选最佳鳍图时的侧边拖放): 只更新同 track
         (ShotID + TrackIDInShot) 的鳍的 FinID, 不动整个个体。
-        group 为 FinNNN 字符串 (如 Fin001); 未分类 sentinel 为 "0"。
-        """
+        group 为 FinNNN 字符串 (如 Fin001); "0" 表示移入未分类
+        (清除 FinID/DolphinID/SocialStructure)。"""
         fid = self._fid_key(group)
-        if fid == "0" or "FinID" not in self.fin_df.columns:
+        if "FinID" not in self.fin_df.columns:
             return {}
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
-        # 扩展到同 track 的所有鳍 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)
-        if "TrackIDInShot" in self.fin_df.columns \
-                and "ShotID" in self.fin_df.columns:
-            key_rows = self.fin_df.loc[
-                mask, ["ShotID", "TrackIDInShot"]].dropna()
-            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
-            if pairs:
-                row_keys = pd.Series(
-                    list(zip(self.fin_df["ShotID"],
-                             self.fin_df["TrackIDInShot"])),
-                    index=self.fin_df.index)
-                mask = mask | row_keys.isin(pairs)
+        mask = self._extend_mask_to_tracks(mask)
         return self._assign_fin_id_to_mask(mask, fid)
 
     def move_selected_to_fin_id(self, paths, group):
         """只把被选中的鳍图移到目标 FinID, 不扩展同 track;
         DolphinID 按目标 FinID 同步/清除。
-        group 为 FinNNN 字符串 (如 Fin001); 未分类 sentinel 为 "0"。
-        """
+        group 为 FinNNN 字符串 (如 Fin001); "0" 表示移入未分类
+        (清除 FinID/DolphinID/SocialStructure)。"""
         fid = self._fid_key(group)
-        if fid == "0" or "FinID" not in self.fin_df.columns:
+        if "FinID" not in self.fin_df.columns:
             return {}
         mask = self.fin_df["fullpath"].isin(paths)
         if not mask.any():
             return {}
         return self._assign_fin_id_to_mask(mask, fid, sync_dolphin=True)
 
-    def move_to_new_fin_id(self, paths):
-        """把选中的鳍图分配到一个全新的 FinID (FinNNN), 并从原 DolphinID 中移出。
+    def split_to_new_fin_id(self, paths, use_track=False):
+        """把选中的鳍图拆分到全新的 FinID (现有最大 +1), 并清除原
+        DolphinID / SocialStructure; 新 FinID 与各来源 FinID 的相似度/关联置 0。
 
-        用于 Fin ID 页 Review 模式侧边栏空白区域拖放: 被拖鳍图可能来自一个或多个
-        现有 FinID, 它们会被统一归入新 FinID, 原有 DolphinID 清空。
+        用于 Fin ID 页: Review 模式侧边栏空白区域拖放 / 右键 Split to New FinID,
+        以及 Match 模式排除区 (被拖鳍图可能来自一个或多个现有 FinID, 统一归入
+        新 FinID)。use_track=True 时扩展到同 track (ShotID+TrackIDInShot)。
         返回 {old_path: old_path} 映射, 供界面从旧组中移除。
         """
         df = self.fin_df
@@ -2234,6 +2241,9 @@ class Dataset:
         mask = df["fullpath"].isin(paths)
         if not mask.any():
             return {}
+        if use_track:
+            mask = self._extend_mask_to_tracks(mask)
+        src_fids = set(df.loc[mask, "FinID"].map(self._fid_key)) - {"0"}
         keys = df["FinID"].map(self._fid_key)
         nums = [int(m.group(1)) for k in keys if k != "0"
                 for m in [re.match(r"^Fin(\d+)$", k)] if m]
@@ -2241,6 +2251,50 @@ class Dataset:
         df.loc[mask, "FinID"] = new_fid
         if "DolphinID" in df.columns:
             df.loc[mask, "DolphinID"] = pd.NA
+        if "SocialStructure" in df.columns:
+            df.loc[mask, "SocialStructure"] = pd.NA
+        self._save_csv(df, "FIN_METAINFO.csv")
+        if src_fids:
+            self._zero_sim_between({new_fid}, src_fids)
+        moved_paths = df.loc[mask, "fullpath"].dropna()
+        return {p: p for p in moved_paths}
+
+    def remove_fin_id(self, paths, use_track=False):
+        """移除选中鳍图的 FinID/DolphinID/SocialStructure (移入未分类 "0"),
+        并把这些行与各来源 FinID 其余鳍之间的相似度/关联置 0 ("0" 是共享
+        未分类桶, 不能用 _zero_sim_between 的 FinID 键表达, 故按行置 0)。
+
+        用于 Fin ID 页右键 Remove FinID / 侧边栏拖入 "0" 组。
+        use_track=True 时扩展到同 track。返回 {old_path: old_path} 映射。
+        """
+        df = self.fin_df
+        if df.empty or "FinID" not in df.columns:
+            return {}
+        mask = df["fullpath"].isin(paths)
+        if not mask.any():
+            return {}
+        if use_track:
+            mask = self._extend_mask_to_tracks(mask)
+        mask_arr = mask.to_numpy()
+        src_keys = df["FinID"].map(self._fid_key).to_numpy()
+        idx_removed = np.flatnonzero(mask_arr)
+        # 先按行置 0 (置 0 前鳍还挂着来源 FinID, 之后行变为 "0" 无法按 FinID 定位)
+        if not hasattr(self, "_feat_lock"):
+            self._feat_lock = threading.Lock()
+        with self._feat_lock:
+            conn = self._ensure_matrices()
+            if conn is not None:
+                for k in set(src_keys[mask_arr]) - {"0"}:
+                    idx_src = np.flatnonzero((src_keys == k) & ~mask_arr)
+                    if len(idx_src):
+                        conn[np.ix_(idx_removed, idx_src)] = 0
+                        conn[np.ix_(idx_src, idx_removed)] = 0
+                np.save(os.path.join(self.meta_dir, "FIN_CONNECTION.npy"), conn)
+        df.loc[mask, "FinID"] = "0"
+        if "DolphinID" in df.columns:
+            df.loc[mask, "DolphinID"] = pd.NA
+        if "SocialStructure" in df.columns:
+            df.loc[mask, "SocialStructure"] = pd.NA
         self._save_csv(df, "FIN_METAINFO.csv")
         moved_paths = df.loc[mask, "fullpath"].dropna()
         return {p: p for p in moved_paths}
@@ -2252,7 +2306,7 @@ class Dataset:
         """把两组 FinID 之间的两两相似度置 0, 写回 FIN_CONNECTION.npy。
         ids_a/ids_b 为 FinNNN 字符串集合 (或列表); 未分类 "0" 会被忽略。
         """
-        sim = self._similarity_matrix()
+        sim = self._ensure_matrices()
         if sim is None or "FinID" not in self.fin_df.columns:
             return
         keys = self.fin_df["FinID"].map(self._fid_key).to_numpy()
@@ -2273,40 +2327,6 @@ class Dataset:
             #    datetime.now().strftime("%Y%m%d-%H%M%S") + ".bak"))
             np.save(conn_file, sim)
         self._invalidate_cache()
-
-    def exclude_to_new_fin_id(self, paths, cur_group, use_track=True):
-        """当前组的鳍拖入排除区: 同 track 的鳍赋予新 FinID (现有最大 +1),
-        新旧 FinID 间相似度置 0, 写回 CSV 和 npy。返回 {path: path}。
-        use_track=False 时只排除被选中的鳍图 (不扩展到同 track)。
-        FinID 统一使用 FinNNN 字符串格式; 未分类 sentinel 为 "0"。
-        """
-        cur_fid = self._fid_key(cur_group or "")
-        if cur_fid == "0":
-            return {}
-        df = self.fin_df
-        mask = df["fullpath"].isin(paths)
-        if not mask.any():
-            return {}
-        # 同 track 扩展 (TrackIDInShot 只在 shot 内唯一, 需带 ShotID)
-        if use_track and "TrackIDInShot" in df.columns \
-                and "ShotID" in df.columns:
-            key_rows = df.loc[mask, ["ShotID", "TrackIDInShot"]].dropna()
-            pairs = set(zip(key_rows["ShotID"], key_rows["TrackIDInShot"]))
-            if pairs:
-                row_keys = pd.Series(
-                    list(zip(df["ShotID"], df["TrackIDInShot"])),
-                    index=df.index)
-                mask = mask | row_keys.isin(pairs)
-        keys = df["FinID"].map(self._fid_key)
-        nums = [int(m.group(1)) for k in keys if k != "0"
-                for m in [re.match(r"^Fin(\d+)$", k)] if m]
-        nxt = max(nums) + 1 if nums else 1
-        new_fid = "Fin%03d" % nxt
-        df.loc[mask, "FinID"] = new_fid
-        self._save_csv(df, "FIN_METAINFO.csv")
-        self._zero_sim_between({new_fid}, {cur_fid})
-        moved = df.loc[mask, "fullpath"].dropna()
-        return {p: p for p in moved}
 
     def exclude_fin_id_pair(self, paths, cur_group):
         """左下相似鳍拖入排除区: 被拖鳍的 FinID 与当前 FinID 的
