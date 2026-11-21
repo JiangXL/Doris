@@ -2,6 +2,7 @@
 """主窗口：组装所有标签页、数据集加载与跨页刷新。"""
 
 import os
+from collections import deque
 
 import pandas as pd
 
@@ -10,8 +11,8 @@ from PyQt6.QtWidgets import (
     QPushButton, QToolButton, QMenu, QStackedWidget, QListWidgetItem,
     QInputDialog,
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtGui import QIcon, QImage
 
 from doris_dataset import Dataset
 from .tabs import DashboardTab, GroupedTab, StatisticsTab
@@ -20,6 +21,25 @@ from .common import ImageGrid
 from resource_paths import resource_path
 
 DORIS_VERSION = "0.2.4"
+
+
+class _FeatureWorker(QThread):
+    """后台重算深度特征/相似度, 避免 GUI 线程做 ONNX 推理时卡死。"""
+
+    done = pyqtSignal()
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, parent=None):
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self):
+        try:
+            self._fn()
+        except Exception as e:
+            self.failed.emit(str(e))
+            return
+        self.done.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self, root=None):
@@ -32,6 +52,8 @@ class MainWindow(QMainWindow):
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
         self._group_tabs = []   # 未 load 前为空, 供 _on_tab_changed 安全遍历
         self._stats_tab = None
+        self._feat_jobs = deque()      # 待执行的特征重算任务 (串行)
+        self._feat_worker = None       # 正在执行的后台特征重算线程
         self.tabs = QTabWidget()
         # 切到统计页时惰性重算, 保证任何改组后看到的都是最新数据
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -100,6 +122,9 @@ class MainWindow(QMainWindow):
         # 退出前停掉所有缩略图加载线程, 否则线程在解释器退出时析构会段错误
         for i in range(self.tabs.count()):
             self._stop_thumb_loaders(self.tabs.widget(i))
+        # 等待正在运行的特征重算线程, 避免 .npy 写一半被中断
+        if getattr(self, "_feat_worker", None) is not None:
+            self._feat_worker.wait(30000)
         super().closeEvent(event)
 
     def _clear_data_tabs(self):
@@ -500,31 +525,105 @@ class MainWindow(QMainWindow):
                 self.ds.social_network_data(), self.ds.traffic_data(),
                 self.ds.timeline_data())
 
-    def _edit_box(self, path, action, index, new_box=None):
-        """全图查看器的鳍框编辑回调: 更新/添加鳍框, 并刷新相关 tab 缩略图。"""
+    @staticmethod
+    def _qimage_to_pil(qimg):
+        """QImage -> PIL RGB。整块拷贝后按行宽剥掉对齐填充 (逐行拷贝太慢)。"""
+        from PIL import Image
+        import numpy as np
+        qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = qimg.width(), qimg.height()
+        bpl = qimg.bytesPerLine()  # >= w*3, 行尾有 4 字节对齐填充
+        raw = qimg.constBits().asstring(bpl * (h - 1) + w * 3)
+        # 前 h-1 行按 bpl 步长, 末行没有填充, 各自剥掉对齐填充后拼接
+        out = np.empty((h, w * 3), np.uint8)
+        out[:-1] = np.frombuffer(raw[:-w * 3], np.uint8) \
+            .reshape(h - 1, bpl)[:, :w * 3]
+        out[-1] = np.frombuffer(raw[-w * 3:], np.uint8)
+        return Image.fromarray(out.reshape(h, w, 3), "RGB")
+
+    @staticmethod
+    def _make_crop_pil(qimg, box):
+        """从查看器已解码的 QImage 裁出鳍图块并转 PIL。
+        整图转换要搬 ~200MB (数百 ms), 只转裁剪块则近乎免费。"""
+        w, h = qimg.width(), qimg.height()
+        x0 = max(0, min(w, int(box[0])))
+        y0 = max(0, min(h, int(box[1])))
+        x1 = max(x0 + 1, min(w, int(box[2])))
+        y1 = max(y0 + 1, min(h, int(box[3])))
+        return MainWindow._qimage_to_pil(
+            qimg.copy(x0, y0, x1 - x0, y1 - y0))
+
+    def _edit_box(self, path, action, index, new_box=None, image=None):
+        """全图查看器的鳍框编辑回调: 更新/添加鳍框, 并刷新相关 tab 缩略图。
+        image 为查看器已解码的原图 (QImage), 避免数据集重复解码;
+        深度特征/相似度重算较贵 (ONNX 推理), 放到后台线程执行。"""
+        crop = (self._make_crop_pil(image, new_box)
+                if image is not None and new_box is not None else None)
         if action == "update":
             old_boxes = self.ds.fin_boxes().get(path, [])
             if index is None or index >= len(old_boxes):
                 return None
             old_box = old_boxes[index]
             if new_box is not None:
-                self.ds.edit_fin_box(path, old_box, new_box)
+                self.ds.edit_fin_box(path, old_box, new_box, crop=crop)
                 self._refresh_fin_boxes_on_tabs(path)
+                self._enqueue_feature_job(
+                    lambda: self.ds.replace_feature_for_box(path, new_box))
                 return self.ds.fin_boxes().get(path, [])
             return None
         if action == "add" and new_box is not None:
-            new_idx = self.ds.add_fin_box(path, new_box)
+            new_idx = self.ds.add_fin_box(path, new_box, crop=crop)
             if new_idx is None:
                 return None
             shot_id = self.ds.fin_df.at[new_idx, "ShotID"]
             if not pd.isna(shot_id):
                 self.ds.assign_track_ids_by_iou(shot_id)
             full = self.ds.fin_df.at[new_idx, "fullpath"]
-            feat = self.ds.extract_feature(full)
-            self.ds._expand_similarity_for_new_fin(feat)
-            self._refresh_tabs()
+            ident = self.ds.fin_df.at[new_idx, "identity"]
+            # 新鳍先显示 (延迟一帧重建), 特征后台补算
+            QTimer.singleShot(0, self._refresh_tabs)
+            self._enqueue_feature_job(lambda: self._after_add_fin(full, ident))
             return self.ds.fin_boxes().get(path, [])
         return None
+
+    def _after_add_fin(self, full, ident):
+        """新增鳍的后台任务: 提特征并扩展相似度矩阵。"""
+        feat = self.ds.extract_feature(full)
+        if feat is None:
+            return
+        # 任务排队期间若又添加了新鳍, 最后一行已变, 扩展会错位, 放弃并提示
+        if self.ds.fin_df.empty or \
+                self.ds.fin_df["identity"].iloc[-1] != ident:
+            raise RuntimeError(
+                "连续添加鳍框导致相似度未更新, 请重新运行 Cluster Fin")
+        self.ds._expand_similarity_for_new_fin(feat)
+
+    def _enqueue_feature_job(self, fn):
+        """排队一个后台特征重算任务 (串行执行, 避免 .npy 写竞争)。"""
+        self._feat_jobs.append(fn)
+        self._pump_feature_jobs()
+
+    def _pump_feature_jobs(self):
+        if self._feat_worker is not None or not self._feat_jobs:
+            return
+        worker = _FeatureWorker(self._feat_jobs.popleft(), self)
+        worker.done.connect(self._on_feature_job_done)
+        worker.failed.connect(self._on_feature_job_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._feat_worker = worker
+        worker.start()
+
+    def _on_feature_job_done(self):
+        self._feat_worker = None
+        self._refresh_tabs()  # 相似度已更新, 刷新各页
+        self._pump_feature_jobs()
+
+    def _on_feature_job_failed(self, msg):
+        self._feat_worker = None
+        if self._dashboard is not None:
+            self._dashboard._append_log("特征重算失败: %s" % msg,
+                                        color="#ff6b6b")
+        self._pump_feature_jobs()
 
     def _refresh_fin_boxes_on_tabs(self, path):
         """更新所有依赖 fin_boxes 的 tab 上的框。"""

@@ -12,6 +12,7 @@ doris_dataset — Doris 的数据层 (pandas / numpy)
 import os
 import re
 import shutil
+import threading
 from datetime import datetime
 from PIL import Image
 
@@ -129,8 +130,9 @@ class Dataset:
         return info
 
     def fin_boxes(self, dolphin_id=False):
-        """全图绝对路径 -> [(x0, y0, x1, y1, cls, extra), ...] (stored 像素坐标)
+        """全图绝对路径 -> [(x0, y0, x1, y1, cls, extra, identity), ...] (stored 像素坐标)
         extra 为叠加文字 (FinID 'F3' 和/或 Clearness '0.87'), 都没有时为 None。
+        identity 为 FIN_METAINFO 行的唯一编号 (框编辑时直接定位行, 无则为 None)。
         dolphin_id=True 时追加 DolphinID ('Dph001', 仅 DL/DR 鳍有),
         且不再标注 p=/c= 和部位文字 (cls 加 '_' 前缀, 只保留框颜色)。"""
         key = ("fin_boxes", dolphin_id)
@@ -149,39 +151,45 @@ class Dataset:
         has_cle = "Clearness" in self.fin_df.columns
         has_conf = "CropConf" in self.fin_df.columns
         has_dph = dolphin_id and "DolphinID" in self.fin_df.columns
+        has_ident = "identity" in self.fin_df.columns
 
-        def extra(fid, cle, conf, dph):
-            parts = []
-            if fid is not None and not pd.isna(fid):
-                parts.append(str(fid))
-            if dph is not None and not pd.isna(dph):
-                parts.append(str(dph))
+        # itertuples 单次遍历代替 groupby + Series zip (数千行时快约一个数量级)
+        use = ["PhotoName", "XMin", "YMin", "XMax", "YMax"]
+        for c, ok in (("FinID", has_fid), ("Aspect", has_asp),
+                      ("Clearness", has_cle), ("CropConf", has_conf),
+                      ("DolphinID", has_dph), ("identity", has_ident)):
+            if ok:
+                use.append(c)
+        for t in self.fin_df[use].itertuples(index=False):
+            if pd.isna(t.PhotoName):
+                continue  # groupby 原本也会跳过 NaN 键
+            p = os.path.join(self.root, str(t.PhotoName))
+            # 不做逐文件 isfile 检查 (大数据集每次重算要 stat 数千文件, 卡顿秒级);
+            # 磁盘缺失的照片不会出现在任何分组网格里, 多出的键无害
+            cls = str(t.Aspect) if has_asp else ""  # Analyse 前无 Aspect, 画无色别框
             if has_dph:  # dolphin_id 模式只标 DolphinID, 不标 FinID
-                return str(dph) if dph is not None and not pd.isna(dph) else None
-            if conf is not None and not pd.isna(conf):
-                parts.append("p=%.2f" % float(conf))
-            if cle is not None and not pd.isna(cle):
-                parts.append("c=%.2f" % float(cle))
-            return " ".join(parts) or None
-
-        for name, g in self.fin_df.groupby("PhotoName"):
-            p = os.path.join(self.root, str(name))
-            if not os.path.isfile(p):
-                continue
-            fids = g["FinID"] if has_fid else [None] * len(g)
-            # Locate Fin 后 Analyse Fin 之前没有 Aspect 列, 用空串画无色别框
-            asps = g["Aspect"] if has_asp else [""] * len(g)
-            cles = g["Clearness"] if has_cle else [None] * len(g)
-            confs = g["CropConf"] if has_conf else [None] * len(g)
-            dphs = g["DolphinID"] if has_dph else [None] * len(g)
-            boxes[p] = [
-                # dolphin_id 模式: cls 加 '_' 前缀, 只取颜色不叠加部位文字
-                (int(a), int(b), int(c), int(d),
-                 "_" + str(cls) if has_dph else str(cls),
-                 extra(fid, cle, conf, dph))
-                for a, b, c, d, cls, fid, cle, conf, dph in zip(
-                    g["XMin"], g["YMin"], g["XMax"], g["YMax"],
-                    asps, fids, cles, confs, dphs)]
+                cls = "_" + cls
+                dph = t.DolphinID
+                extra_s = (str(dph)
+                           if dph is not None and not pd.isna(dph) else None)
+            else:
+                parts = []
+                fid = t.FinID if has_fid else None
+                if fid is not None and not pd.isna(fid):
+                    parts.append(str(fid))
+                conf = t.CropConf if has_conf else None
+                if conf is not None and not pd.isna(conf):
+                    parts.append("p=%.2f" % float(conf))
+                cle = t.Clearness if has_cle else None
+                if cle is not None and not pd.isna(cle):
+                    parts.append("c=%.2f" % float(cle))
+                extra_s = " ".join(parts) or None
+            ident = t.identity if has_ident else None
+            boxes.setdefault(p, []).append(
+                (int(t.XMin), int(t.YMin), int(t.XMax), int(t.YMax),
+                 cls, extra_s,
+                 int(ident) if ident is not None and not pd.isna(ident)
+                 else None))
         self._cache[key] = boxes
         return boxes
 
@@ -320,7 +328,7 @@ class Dataset:
         df = self.fin_df.dropna(subset=["fullpath"])
         for cls, g in df.groupby("Aspect"):
             label = ASPECT_LABELS.get(cls, str(cls))
-            sorted_g = g.sort_values(by="ShotID")
+            sorted_g = g.sort_values(by="PhotoName")
             groups.setdefault(label, []).extend(sorted_g["fullpath"])
         return groups
 
@@ -1456,78 +1464,88 @@ class Dataset:
     # ------------------------------------------------------------------
     # 鳍框编辑: 在全图查看器中调整框坐标并同步裁剪图
     # ------------------------------------------------------------------
-    def update_fin_box(self, path, old_box, new_box):
-        """更新 FIN_METAINFO.csv 中指定原图的单个鳍框坐标。
-
-        path: 原图绝对路径; old_box/new_box: (x0, y0, x1, y1, cls, extra)。
-        按 PhotoName + 原坐标定位唯一行, 写入新坐标后保存 CSV。
-        返回该图更新后的鳍框列表 (来自 fin_boxes())。
-        """
+    def _find_fin_row(self, path, box):
+        """按 identity (box[6], 有则优先) 或 PhotoName+框坐标定位 FIN_METAINFO 行。
+        返回行 index, 找不到返回 None。"""
         if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
-            return []
-        name = os.path.basename(path)
-        x0, y0, x1, y1, cls, _ = old_box
-        cls = cls.lstrip("_") if isinstance(cls, str) else cls
+            return None
         need = ["XMin", "YMin", "XMax", "YMax"]
         if not all(c in self.fin_df.columns for c in need):
-            return []
+            return None
+        ident = box[6] if len(box) > 6 else None
+        if ident is not None and "identity" in self.fin_df.columns:
+            idxs = np.flatnonzero(
+                self.fin_df["identity"].to_numpy() == ident)
+            return int(idxs[0]) if len(idxs) else None
+        name = os.path.basename(path)
+        x0, y0, x1, y1, cls, _ = box[:6]
+        cls = cls.lstrip("_") if isinstance(cls, str) else cls
         mask = self.fin_df["PhotoName"] == name
         for col, val in zip(need, [x0, y0, x1, y1]):
             mask = mask & (
-                self.fin_df[col].astype(float).round().astype(int) == int(val))
+                self.fin_df[col].astype(float).round().astype(int)
+                == int(val))
         if "Aspect" in self.fin_df.columns and cls is not None:
             mask = mask & (self.fin_df["Aspect"] == cls)
         if not mask.any():
+            return None
+        return int(self.fin_df[mask].index[0])
+
+    def update_fin_box(self, path, old_box, new_box, save=True):
+        """更新 FIN_METAINFO.csv 中指定原图的单个鳍框坐标。
+
+        path: 原图绝对路径; old_box/new_box: (x0, y0, x1, y1, cls, extra[, identity])。
+        优先按 identity 定位行 (old_box[6]), 否则按 PhotoName + 原坐标。
+        写入新坐标; save=True 时保存 CSV (edit_fin_box 传入 save=False
+        以免重复保存)。返回该图更新后的鳍框列表 (来自 fin_boxes())。
+        """
+        idx = self._find_fin_row(path, old_box)
+        if idx is None:
             return []
-        idx = self.fin_df[mask].index[0]
-        nx0, ny0, nx1, ny1, _, _ = new_box
-        self.fin_df.loc[idx, "XMin"] = int(nx0)
-        self.fin_df.loc[idx, "YMin"] = int(ny0)
-        self.fin_df.loc[idx, "XMax"] = int(nx1)
-        self.fin_df.loc[idx, "YMax"] = int(ny1)
-        self._save_csv(self.fin_df, "FIN_METAINFO.csv")
+        nx0, ny0, nx1, ny1 = (int(v) for v in new_box[:4])
+        self.fin_df.loc[idx, "XMin"] = nx0
+        self.fin_df.loc[idx, "YMin"] = ny0
+        self.fin_df.loc[idx, "XMax"] = nx1
+        self.fin_df.loc[idx, "YMax"] = ny1
+        if save:
+            self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return self.fin_boxes().get(path, [])
 
-    def regenerate_fin_crop(self, path, box):
+    def regenerate_fin_crop(self, path, box, crop=None, update_meta=True):
         """按新框坐标重新生成并覆盖 FIN/ 下的裁剪鳍图。
 
         返回保存的裁剪图绝对路径; 若 FIN_METAINFO 中无对应行则返回 None。
         优先保留现有 Path/fullpath, 避免框编辑后 grid 中存储的 fin 路径失效。
+        crop: 已裁好的 PIL 鳍图 (由大图查看器传入, 避免重复解码整张照片);
+              None 时自行读原图按 box 裁剪 (box 坐标须已被调用方钳制)。
+        update_meta=False 时只做纯文件操作, 不写 fin_df/CSV
+        (后台任务用; 被编辑的鳍必有 Path/fullpath)。
         """
         if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
             return None
         name = os.path.basename(path)
-        x0, y0, x1, y1, cls, _ = box
-        cls = cls.lstrip("_") if isinstance(cls, str) else cls
-        need = ["XMin", "YMin", "XMax", "YMax"]
-        if not all(c in self.fin_df.columns for c in need):
+        idx = self._find_fin_row(path, box)
+        if idx is None:
             return None
-        mask = self.fin_df["PhotoName"] == name
-        for col, val in zip(need, [x0, y0, x1, y1]):
-            mask = mask & (
-                self.fin_df[col].astype(float).round().astype(int) == int(val))
-        if "Aspect" in self.fin_df.columns and cls is not None:
-            mask = mask & (self.fin_df["Aspect"] == cls)
-        if not mask.any():
-            return None
-        idx = self.fin_df[mask].index[0]
         row = self.fin_df.loc[idx]
+        x0, y0, x1, y1, cls, _ = box[:6]
 
-        try:
-            img = Image.open(path)
-        except Exception:
-            import cv2
-            img = cv2.imread(path)
-            if img is None:
-                return None
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(img)
-        w, h = img.size
-        x0 = max(0, min(w, int(x0)))
-        y0 = max(0, min(h, int(y0)))
-        x1 = max(x0 + 1, min(w, int(x1)))
-        y1 = max(y0 + 1, min(h, int(y1)))
-        crop = img.crop((x0, y0, x1, y1))
+        if crop is None:
+            try:
+                img = Image.open(path)
+            except Exception:
+                import cv2
+                img = cv2.imread(path)
+                if img is None:
+                    return None
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(img)
+            w, h = img.size
+            x0 = max(0, min(w, int(x0)))
+            y0 = max(0, min(h, int(y0)))
+            x1 = max(x0 + 1, min(w, int(x1)))
+            y1 = max(y0 + 1, min(h, int(y1)))
+            crop = img.crop((x0, y0, x1, y1))
 
         rel_path = row.get("Path") if "Path" in row.index else None
         full_path = row.get("fullpath") if "fullpath" in row.index else None
@@ -1536,7 +1554,8 @@ class Dataset:
         elif isinstance(full_path, str) and full_path:
             # Path 缺失但 fullpath 还在: 从 fullpath 推相对路径, 保证 grid 路径不变
             out_rel = os.path.relpath(full_path, self.root)
-            self.fin_df.loc[idx, "Path"] = out_rel
+            if update_meta:
+                self.fin_df.loc[idx, "Path"] = out_rel
         else:
             ext = os.path.splitext(name)[1].lower()
             if ext not in (".jpg", ".jpeg", ".png"):
@@ -1549,18 +1568,22 @@ class Dataset:
                 pos = 0
             out_rel = "FIN/%s_FIN%02d%s" % (
                 os.path.splitext(name)[0], pos, ext)
-            self.fin_df.loc[idx, "Path"] = out_rel
+            if update_meta:
+                self.fin_df.loc[idx, "Path"] = out_rel
         out_abs = os.path.join(self.root, out_rel)
         os.makedirs(os.path.dirname(out_abs), exist_ok=True)
         crop.save(out_abs)
+        if not update_meta:
+            return out_abs
         self.fin_df.loc[idx, "fullpath"] = out_abs
         self._save_csv(self.fin_df, "FIN_METAINFO.csv")
         return out_abs
 
-    def edit_fin_box(self, path, old_box, new_box):
-        """更新鳍框坐标并重新生成对应裁剪图。返回该图更新后的框列表。"""
-        self.update_fin_box(path, old_box, new_box)
-        self.regenerate_fin_crop(path, new_box)
+    def edit_fin_box(self, path, old_box, new_box, crop=None):
+        """更新鳍框坐标并重新生成对应裁剪图。返回该图更新后的框列表。
+        crop 为已裁好的 PIL 鳍图 (避免重复解码); 整次编辑只保存一次 CSV。"""
+        self.update_fin_box(path, old_box, new_box, save=False)
+        self.regenerate_fin_crop(path, new_box, crop=crop)
         return self.fin_boxes().get(path, [])
 
     @staticmethod
@@ -1580,10 +1603,13 @@ class Dataset:
         union_area = box1_area + box2_area - inter_area
         return inter_area / union_area if union_area > 0 else 0.0
 
-    def add_fin_box(self, path, box, clearness=None, crop_conf=None):
+    def add_fin_box(self, path, box, clearness=None, crop_conf=None,
+                    crop=None):
         """在原始照片上手动添加一个鳍框, 插入 FIN_METAINFO.csv 并生成裁剪图。
 
-        box: (x0, y0, x1, y1, cls, extra); cls 为 Aspect (DL/DR/MISC)。
+        box: (x0, y0, x1, y1, cls, extra[, identity]); cls 为 Aspect (DL/DR/MISC)。
+        crop: 已裁好的 PIL 鳍图 (由大图查看器传入, 避免重复解码整张照片),
+              传入时 box 坐标须已按图像尺寸钳制; None 时自行读原图裁剪。
         返回新增行的 index, 失败返回 None。新行的 FinID 初始为 "0" (未分类),
         DolphinID 为空, TrackIDInShot 为空。
         """
@@ -1592,7 +1618,7 @@ class Dataset:
         name = os.path.basename(path)
         if not os.path.isfile(path):
             return None
-        x0, y0, x1, y1, cls, _ = box
+        x0, y0, x1, y1, cls, _ = box[:6]
         cls = cls.lstrip("_") if isinstance(cls, str) else cls
         need = ["XMin", "YMin", "XMax", "YMax", "Aspect"]
         for c in need:
@@ -1632,21 +1658,22 @@ class Dataset:
             except Exception:
                 next_identity = len(self.fin_df) + 1
 
-        try:
-            img = Image.open(path)
-        except Exception:
-            import cv2
-            img = cv2.imread(path)
-            if img is None:
-                return None
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(img)
-        w, h = img.size
-        x0 = max(0, min(w, int(x0)))
-        y0 = max(0, min(h, int(y0)))
-        x1 = max(x0 + 1, min(w, int(x1)))
-        y1 = max(y0 + 1, min(h, int(y1)))
-        crop = img.crop((x0, y0, x1, y1))
+        if crop is None:
+            try:
+                img = Image.open(path)
+            except Exception:
+                import cv2
+                img = cv2.imread(path)
+                if img is None:
+                    return None
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(img)
+            w, h = img.size
+            x0 = max(0, min(w, int(x0)))
+            y0 = max(0, min(h, int(y0)))
+            x1 = max(x0 + 1, min(w, int(x1)))
+            y1 = max(y0 + 1, min(h, int(y1)))
+            crop = img.crop((x0, y0, x1, y1))
 
         ext = os.path.splitext(name)[1].lower()
         if ext not in (".jpg", ".jpeg", ".png"):
@@ -1794,19 +1821,102 @@ class Dataset:
         """对单个裁剪鳍图提取深度特征向量 (numpy 1-D array)。"""
         if not os.path.isfile(crop_path):
             return None
-        if getattr(self, "_deep_feat_extractor", None) is None:
-            from Step3_extract_fin_feature import FinDeepFeatureExtractor
-            self._deep_feat_extractor = FinDeepFeatureExtractor().feature_extractor
+        if not hasattr(self, "_feat_lock"):
+            self._feat_lock = threading.Lock()
+        with self._feat_lock:  # 首次加载 ONNX 模型较慢, 防止并发初始化
+            if getattr(self, "_deep_feat_extractor", None) is None:
+                from Step3_extract_fin_feature import FinDeepFeatureExtractor
+                self._deep_feat_extractor = \
+                    FinDeepFeatureExtractor().feature_extractor
         extractor = self._deep_feat_extractor
         feat = extractor.extract([crop_path], batch_size=1)
         return feat[0] if feat is not None and len(feat) else None
+
+    def replace_feature_for_box(self, path, box):
+        """鳍框被编辑后, 重算该鳍的深度特征并更新相似度矩阵 (供后台任务调用)。
+        优先按 box[6] (identity) 定位行, 否则按 PhotoName+坐标。"""
+        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
+            return
+        idx = self._find_fin_row(path, box)
+        if idx is None:
+            return
+        full = self.fin_df.at[idx, "fullpath"] \
+            if "fullpath" in self.fin_df.columns \
+            else os.path.join(self.root, str(self.fin_df.at[idx, "Path"]))
+        feat = self.extract_feature(full)
+        if feat is None:
+            return
+        self._replace_similarity_row(idx, np.asarray(feat).reshape(1, -1))
+
+    def _replace_similarity_row(self, idx, f_new):
+        """替换第 idx 个鳍的特征向量, 重算相似度/关联矩阵的第 idx 行/列。"""
+        feat_file = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.npy")
+        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
+        conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
+        if not os.path.isfile(feat_file) or not os.path.isfile(sim_file):
+            return
+        if not hasattr(self, "_feat_lock"):
+            self._feat_lock = threading.Lock()
+        with self._feat_lock:
+            features = np.load(feat_file)
+            sim = np.load(sim_file)
+            conn = np.load(conn_file) \
+                if os.path.isfile(conn_file) else sim.copy()
+            N = len(features)
+            if not (0 <= idx < N) or sim.shape != (N, N):
+                return
+            norms = np.linalg.norm(features, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            norm_new = float(np.linalg.norm(f_new))
+            if norm_new == 0:
+                norm_new = 1.0
+            cross = np.dot(f_new / norm_new,
+                           (features / norms).T).reshape(-1)
+            features[idx] = f_new
+            sim[idx, :] = cross
+            sim[:, idx] = cross
+            sim[idx, idx] = 1.0
+            conn[idx, :] = cross
+            conn[:, idx] = cross
+            conn[idx, idx] = 1.0
+            # same-photo 置 0 (编辑后的鳍与同一原图的其它鳍)
+            name = str(self.fin_df["PhotoName"].iloc[idx])
+            same = np.flatnonzero(
+                self.fin_df["PhotoName"].to_numpy() == name)
+            same = same[same != idx]
+            if len(same):
+                sim[idx, same] = 0.0
+                sim[same, idx] = 0.0
+            # CONNECTION: same-track 置 1
+            if "TrackIDInShot" in self.fin_df.columns:
+                track = self.fin_df["TrackIDInShot"].iloc[idx]
+                shot = str(self.fin_df["ShotID"].iloc[idx])
+                if not pd.isna(track):
+                    mask = ((self.fin_df["ShotID"].astype(str) == shot)
+                            & (self.fin_df["TrackIDInShot"] == track)
+                            ).to_numpy().copy()  # CoW 下 to_numpy 可能只读
+                    mask[idx] = False
+                    tidx = np.flatnonzero(mask)
+                    conn[idx, tidx] = 1.0
+                    conn[tidx, idx] = 1.0
+            np.save(feat_file, features)
+            np.save(sim_file, sim)
+            np.save(conn_file, conn)
+        self._sim = conn
+        self._invalidate_cache()
 
     def _expand_similarity_for_new_fin(self, new_feature):
         """新增一个鳍后, 同步扩展 FIN_DEEPFEATURES / FIN_SIMILARITY / FIN_CONNECTION。
 
         调用前必须保证 FIN_METAINFO.csv 已经包含新行 (最后一行),
-        FIN_DEEPFEATURES.npy 尚未扩展。
+        FIN_DEEPFEATURES.npy 尚未扩展。加锁防止与编辑重算并发写文件。
         """
+        if not hasattr(self, "_feat_lock"):
+            self._feat_lock = threading.Lock()
+        with self._feat_lock:
+            self._expand_similarity_for_new_fin_impl(new_feature)
+
+    def _expand_similarity_for_new_fin_impl(self, new_feature):
         if new_feature is None:
             return
         feat_file = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.npy")

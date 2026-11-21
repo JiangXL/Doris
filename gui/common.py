@@ -757,7 +757,8 @@ class ResizableBoxItem(QGraphicsRectItem):
 
     def __init__(self, box, image_w, image_h, parent=None):
         super().__init__(parent)
-        x0, y0, x1, y1, cls, extra = box
+        x0, y0, x1, y1, cls, extra = box[:6]
+        self._box = box
         self._box = box
         self._image_w = image_w
         self._image_h = image_h
@@ -1049,8 +1050,12 @@ class ImageViewerDialog(QDialog):
                 old_box = boxes[i]
                 new_box = (int(r.left()), int(r.top()),
                            int(r.right()), int(r.bottom()),
-                           old_box[4], old_box[5])
-                updated = self._box_editor(path, "update", i, new_box)
+                           old_box[4], old_box[5],
+                           old_box[6] if len(old_box) > 6 else None)
+                updated = self._box_editor(
+                    path, "update", i, new_box,
+                    image=self._item.pixmap().toImage()
+                    if self._item is not None else None)
                 if updated is not None:
                     self._boxes[path] = updated
         for item in self._edit_items:
@@ -1102,7 +1107,10 @@ class ImageViewerDialog(QDialog):
         if not ok:
             return
         box = (x0, y0, x1, y1, str(aspect), None)
-        updated = self._box_editor(path, "add", None, box)
+        updated = self._box_editor(
+            path, "add", None, box,
+            image=self._item.pixmap().toImage()
+            if self._item is not None else None)
         if updated is not None:
             self._boxes[path] = updated
         self._refresh_overlay()  # 覆盖层重读 self._boxes, 不必重新解码

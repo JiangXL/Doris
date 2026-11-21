@@ -746,10 +746,12 @@ class GroupedTab(QWidget):
             origs.insert(0, orig)
 
         fin_crop_path = path
-        def _edit_for_middle(orig_path, action, index, new_box=None):
+        def _edit_for_middle(orig_path, action, index, new_box=None,
+                             image=None):
             if self._box_editor is None:
                 return None
-            updated = self._box_editor(orig_path, action, index, new_box)
+            updated = self._box_editor(orig_path, action, index, new_box,
+                                       image=image)
             if updated is not None:
                 # 原图框和 FIN/ 裁剪图已更新, 刷新鳍图页网格缩略图
                 self.grid.refresh_path(fin_crop_path)
