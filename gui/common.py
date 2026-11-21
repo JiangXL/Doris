@@ -982,13 +982,21 @@ class ImageViewerDialog(QDialog):
             # 场景范围只按原图算, 避免覆盖层/编辑框撑大 fitInView
             self._scene.setSceneRect(QRectF(pm.rect()))
         self._refresh_overlay()
-        self.setWindowTitle("%s  (%d/%d)" % (os.path.basename(path),
-                                             index + 1, len(self._paths)))
+        label = self._labels.get(path) or self._labels.get(
+            os.path.basename(path))
+        # 标题最前显示 shot id (标签首 token; 鳍图标签为 'shot_x clr=.. conf=..')
+        shot_id = label.split()[0] if label else None
+        title = "%s  (%d/%d)" % (os.path.basename(path),
+                                 index + 1, len(self._paths))
+        if shot_id:
+            title = "%s  %s" % (shot_id, title)
+        self.setWindowTitle(title)
         if not pm.isNull():
             self.view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _refresh_overlay(self):
-        """按当前图片重建鳍框/标签覆盖层 (干净 pixmap 之上的纯装饰项)。"""
+        """按当前图片重建鳍框/标签覆盖层 (干净 pixmap 之上的纯装饰项)。
+        标签只叠加给鳍图; 原图的 shot id 已显示在窗口标题上。"""
         if self._overlay_item is not None:
             self._scene.removeItem(self._overlay_item)
             self._overlay_item = None
@@ -996,8 +1004,11 @@ class ImageViewerDialog(QDialog):
         pm = self._item.pixmap() if self._item is not None else None
         if pm is None or pm.isNull():
             return
-        overlay = BoxesOverlayItem(self._boxes.get(path),
-                                   self._labels.get(path),
+        label = None
+        if ThumbLoader._is_fin_image(path):
+            label = self._labels.get(path) or self._labels.get(
+                os.path.basename(path))
+        overlay = BoxesOverlayItem(self._boxes.get(path), label,
                                    pm.width(), pm.height())
         overlay.setZValue(1)
         self._scene.addItem(overlay)
