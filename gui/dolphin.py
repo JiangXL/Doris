@@ -466,17 +466,19 @@ class CandidateList(QListWidget):
         self._loaders = []
         self._items = {}
         self._imgs = {}  # path -> 已加载的 QImage (重缩放用)
-        self._labels = {}      # sim 标签由 delegate 叠加, 此处只存数据
-        self._orig_dims = {}   # path -> (原图宽, 原图高)
+        self._labels = {}      # FinID -> sim 标签, 由 delegate 叠加
+        self._orig_dims = {}   # FinID -> (原图宽, 原图高)
 
     def show_candidates(self, fids, paths, labels):
         """(fids, paths, labels): 后台分片加载候选鳍缩略图,
-        'Fin001 sim=0.83' 由 delegate 叠加在图上。"""
+        'Fin001 sim=0.83' 由 delegate 按 FinID 键叠加在图上。
+        候选图已是 fin 裁剪, 不再叠加鳍框。"""
         self._stop_loaders()
         self.clear()
         self._items = {}
         self._imgs = {}
-        self._labels = labels or {}
+        self._labels = {str(f): labels[p]
+                        for f, p in zip(fids, paths) if p in labels}
         self._orig_dims = {}
         for fid, p in zip(fids, paths):
             item = QListWidgetItem()
@@ -500,11 +502,13 @@ class CandidateList(QListWidget):
             loader.start()
             self._loaders.append(loader)
 
-    def _set_thumb(self, path, img, ow, oh):
+    def _set_thumb(self, path, img, ow=None, oh=None):
         self._imgs[path] = img
-        self._orig_dims[path] = (ow, oh)
         item = self._items.get(path)
         if item is not None:
+            if ow is not None and oh is not None:
+                self._orig_dims[str(item.data(Qt.ItemDataRole.UserRole))] \
+                    = (ow, oh)
             # QIcon 不会把小的源图放大到 iconSize, 需先手动放大再设入,
             # 否则 256px 的缩略图在大格子里仍显示为小图
             sz = self.iconSize()
@@ -555,6 +559,14 @@ class CandidateList(QListWidget):
             if p:
                 ImageViewerDialog([p], 0, self).exec()
         super().mouseDoubleClickEvent(event)
+
+    # -- 滚轮: 减小步长, 滚动更细腻 -------------------------------------------
+    def wheelEvent(self, event):
+        bar = self.verticalScrollBar()
+        delta = event.angleDelta().y()
+        # 默认一格 (delta=120) 会滚过多行, 改为约 1/4 格像素量
+        bar.setValue(bar.value() - delta // 4)
+        event.accept()
 
     # -- 接受左侧鳍格的拖出落点 (no-op, 拖拽完成即确认不匹配) -----------------
     def dragEnterEvent(self, event):

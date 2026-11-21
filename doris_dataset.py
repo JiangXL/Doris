@@ -422,7 +422,6 @@ class Dataset:
         if df.empty or "DolphinID" not in df.columns:
             return {}
         current = set(str(v) for v in df["DolphinID"].dropna().unique())
-        current |= set(self._extra_dolphins())
         order = list(order)
         missing = current - set(order)
         if missing:
@@ -1403,7 +1402,8 @@ class Dataset:
     def dolphin_candidates(self, fid, cls, threshold=0.3, limit=30):
         """与 (fid, cls) 鳍最相似的异侧候选鳍 (Match Mode 候选栏)。
         返回 (fids, paths, labels): 每个候选 FinID 取 BestInShot 中最清晰
-        一张代表图, labels = 'FinIDx sim=0.83', 按相似度降序。"""
+        一张代表图 (fin 裁剪图), labels = 'FinIDx sim=0.83' (path 为键),
+        按相似度降序。候选图已是 fin 裁剪, 不叠加鳍框。"""
         df = self.fin_df
         sim = self._similarity_matrix()
         if df.empty or sim is None or "FinID" not in df.columns \
