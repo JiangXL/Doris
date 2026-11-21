@@ -1072,7 +1072,8 @@ class Dataset:
                 with_dph= set(with_dph["PhotoName"].dropna())
             else:
                 with_dph = set()
-            low |= all_orig - with_dph
+            low |= all_orig - with_dph - note_photos - misc_photos - bird_photos
+            # remove note/misc/bird photos with "ND"/"MISC" fin detection
         out = []
         for name in sorted(low):
             p = os.path.join(self.root, str(name))

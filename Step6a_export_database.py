@@ -105,7 +105,8 @@ class DatabaseExporter:
                 with_dph = set(with_dph["PhotoName"].dropna())
             else:
                 with_dph = set()
-            low |= all_orig - with_dph
+            low |= all_orig - with_dph - note_photos - misc_photos - bird_photos 
+            # remove note/misc/bird photos with "ND"/"MISC" detection
         for name in sorted(low):
             self._copy_orig(name, folder)
         print("Export Low Quality Photos, done")
