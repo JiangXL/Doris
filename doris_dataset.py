@@ -1045,17 +1045,19 @@ class Dataset:
         low = set()
         note_photos = set()
         misc_photos = set()
+        bird_photos = set()
         if self.photo_df is not None and not self.photo_df.empty:
             all_photos = set(self.photo_df["PhotoName"])
             if "ShotType" in self.photo_df.columns:
                 note_photos = set(self.photo_df.query("ShotType=='NOTE'")['PhotoName'])
                 misc_photos = set(self.photo_df.query("ShotType=='MISC'")['PhotoName'])
+                bird_photos = set(self.photo_df.query("ShotType=='SEABIRD'")['PhotoName'])
         else:
             print("Miss valid PHOTO_METAINFO.csv")
         if not self.fin_df.empty and "PhotoName" in self.fin_df.columns:
             all_orig = set(self.fin_df["PhotoName"].dropna())
             # 没有任何鳍框
-            low |= all_photos - all_orig - note_photos - misc_photos
+            low |= all_photos - all_orig - note_photos - misc_photos - bird_photos
             # 有鳍但无 DolphinID 的鳍
             if "DolphinID" in self.fin_df.columns:
                 with_dph = self.fin_df.dropna(subset=["DolphinID"])

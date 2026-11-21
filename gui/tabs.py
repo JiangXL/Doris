@@ -631,7 +631,7 @@ class GroupedTab(QWidget):
                     top.addWidget(QLabel("ShotType:"))
                     self._shot_type_cb = QComboBox()
                     self._shot_type_cb.addItems(
-                        ["", "NOTE", "SEABIRD", "Dolphin", "MISC"])
+                        ["NOTE", "SEABIRD", "MISC", ""])
                     self._shot_type_cb.setMinimumWidth(90)
                     self._shot_type_cb.currentTextChanged.connect(
                         self._on_shot_type_changed)

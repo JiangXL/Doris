@@ -90,13 +90,14 @@ class DatabaseExporter:
             all_photos = set(photo["PhotoName"])
             note_photos = set(photo.query("ShotType=='NOTE'")['PhotoName'])
             misc_photos = set(photo.query("ShotType=='MISC'")['PhotoName'])
+            bird_photos = set(photo.query("ShotType=='SEABIRD'")['PhotoName'])
         else:
             print("Miss valid PHOTO_METAINFO.csv")
         fin = self.fin_df
         if not fin.empty and "PhotoName" in fin.columns:
             all_orig = set(fin["PhotoName"].dropna())
             # 无鳍的原图 
-            low |= all_photos - all_orig - note_photos - misc_photos
+            low |= all_photos - all_orig - note_photos - misc_photos - bird_photos 
             # 有鳍但没有 DolphinID 的照片
             if "DolphinID" in fin.columns:
                 with_dph = fin.dropna(subset=["DolphinID"])
