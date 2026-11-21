@@ -166,7 +166,8 @@ class FinLocator:
             inflight = deque()
             for j in range(min(prefetch_batches + 1, len(batches))):
                 inflight.append([decode_pool.submit(self._read_photo, p) for p in batches[j]])
-            for bi in tqdm(range(len(batches)), desc="Locating fin image"):
+            pbar = tqdm(total=len(jpg_paths), desc="Locating fin image")
+            for bi in range(len(batches)):
                 pending = inflight.popleft()
                 nxt = bi + prefetch_batches + 1
                 if nxt < len(batches):
@@ -176,9 +177,11 @@ class FinLocator:
                     if photo is None:
                         continue
                     accumulator.append((p, photo, letterboxed))
+                pbar.update(len(pending))
                 while len(accumulator) >= self.fin_detector.batch:
                     flush(self.fin_detector.batch)
             flush()
+            pbar.close()
         self.fin_info = pd.DataFrame(all_rows)
         # 生成唯一编号
         self.fin_info["identity"] = range(len(self.fin_info))

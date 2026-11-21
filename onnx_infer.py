@@ -427,13 +427,15 @@ class OnnxFeatureExtractor:
 
     def _run_chunked(self, items, batch_size):
         features = []
-        for start in tqdm(range(0, len(items), batch_size), 
-                          desc="Exract DeepFeatures"):
+        pbar = tqdm(total=len(items), desc="Extract DeepFeatures")
+        for start in range(0, len(items), batch_size):
             batch = np.stack([self._preprocess(i) for i in
                               items[start:start + batch_size]])
             out = self.session.run(None, {self.input_name: batch})[0]
+            pbar.update(batch.shape[0])
             features.append(np.asarray(out, dtype=np.float32).reshape(
                 batch.shape[0], -1))
+        pbar.close()
         return np.concatenate(features, axis=0) if features else np.zeros((0, 0), np.float32)
 
     def extract(self, items, batch_size=32):

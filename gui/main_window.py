@@ -27,7 +27,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Doris v%s — %s" % (DORIS_VERSION, root) if root
                             else "Doris v%s" % DORIS_VERSION)
         self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
-        #self.resize(1280, 800)
+        self.resize(1280, 800)
 
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
         self._group_tabs = []   # 未 load 前为空, 供 _on_tab_changed 安全遍历

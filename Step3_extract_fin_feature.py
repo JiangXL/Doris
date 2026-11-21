@@ -73,16 +73,18 @@ class FinQualityAspectAnalyser:
     def _predict_batches(self, metainfo, paths, valid_idx):
         """分批跑模糊/部位模型, 把结果填进 metainfo 对应行。"""
         # TODO: fin images are read and decoded twice
-        for start in tqdm(range(0, len(valid_idx), self.batch_size),
-                desc="Calculate Quality and Aspect"):
+        pbar = tqdm(total=len(valid_idx), desc="Calculate Quality and Aspect")
+        for start in range(0, len(valid_idx), self.batch_size):
             idx_batch = valid_idx[start:start + self.batch_size]
             img_batch = [paths[i] for i in idx_batch]
             blur_rets = self.blur_detector.predict_batch(img_batch)
             aspect_rets = self.aspect_detector.predict_batch(img_batch)
+            pbar.update(len(idx_batch))
             for i, blur_ret, aspect_ret in zip(idx_batch, blur_rets, aspect_rets):
                 metainfo.loc[i, "Clearness"] = blur_ret["probabilities"]["clear"]
                 metainfo.loc[i, "Aspect"] = aspect_ret["class"]
                 metainfo.loc[i, "Aspect_Conf"] = aspect_ret["confidence"]
+        pbar.close()
 
     def _apply_quality_thresholds(self, metainfo):
         """按清晰度置信度阈值计算 Clear 列。"""
