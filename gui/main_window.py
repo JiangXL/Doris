@@ -534,7 +534,7 @@ class MainWindow(QMainWindow):
                 dolphin_id = (title == "Social Structure")
                 tab._boxes[path] = self.ds.fin_boxes(
                     dolphin_id=dolphin_id).get(path, [])
-                tab.grid.refresh_path(path)
+                tab.grid.repaint_path(path)  # 只重绘, 图像文件未变
 
     def _rebuild_group_tab(self, tab, title, fn):
         """重建一个分组页 (Continuous Shots / Fin Aspect / Fin Quality / Fin ID / Social Structure)。"""

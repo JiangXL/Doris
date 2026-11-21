@@ -28,21 +28,21 @@ MIME_PATHS = "application/x-doris-paths"
 BOX_COLORS = {"DL": QColor(0, 200, 0), "DR": QColor(255, 140, 0),
               "MISC": QColor(220, 0, 0), "ND": QColor(128, 128, 128)}
 
-def draw_boxes(target, boxes, orig_w, orig_h):
-    """在目标 QImage/QPixmap 上画鳍框 (orig_w/h 为框坐标对应的图像尺寸)。
+def _paint_boxes(p, target, boxes, orig_w, orig_h):
+    """把鳍框画进 painter 上的 target 矩形 (target 对应 orig_w x orig_h 的图像区域)。
     boxes: [(x0, y0, x1, y1, cls[, extra]), ...] 图像像素坐标;
     extra (如 FinID) 非空时追加在类别文字后。
     cls 以 '_' 开头时只用它取框颜色, 不叠加类别文字 (社会结构页用)。"""
+    tx, ty = target.x(), target.y()
     sx = target.width() / orig_w
     sy = target.height() / orig_h
-    pen_w = max(2, target.width() // 300)
-    p = QPainter(target)
+    pen_w = max(2, int(target.width()) // 300)
     f = p.font()
-    f.setPixelSize(max(12, target.width() // 40))
+    f.setPixelSize(max(12, int(target.width()) // 40))
     f.setBold(True)
     p.setFont(f)
     placed = []  # 已放置文字的矩形, 避免多个标注互相重叠
-    box_rects = [QRect(int(b[0] * sx), int(b[1] * sy),
+    box_rects = [QRect(int(tx + b[0] * sx), int(ty + b[1] * sy),
                        int((b[2] - b[0]) * sx), int((b[3] - b[1]) * sy))
                  for b in boxes]
     for box, rect in zip(boxes, box_rects):
@@ -67,11 +67,15 @@ def draw_boxes(target, boxes, orig_w, orig_h):
             (rect.left() + 2, rect.bottom() + 2),
         ]
         label_rect = None
+        left_lim = int(tx) + 2
+        right_lim = int(tx + target.width()) - 2
+        top_lim = int(ty)
+        bot_lim = int(ty + target.height())
         for cx, cy in candidates:
-            if cx + tw > target.width() - 2:  # 右侧越界则左移
-                cx = max(2, target.width() - 2 - tw)
+            if cx + tw > right_lim:  # 右侧越界则左移
+                cx = max(left_lim, right_lim - tw)
             r = QRect(cx, cy, tw, th)
-            if r.top() < 0 or r.bottom() > target.height():
+            if r.top() < top_lim or r.bottom() > bot_lim:
                 continue  # 上下越界的位置不可用
             if any(r.intersects(b) for b in box_rects):
                 continue  # 不压任何鳍框
@@ -82,9 +86,9 @@ def draw_boxes(target, boxes, orig_w, orig_h):
         if label_rect is None:
             # 全部冲突时退回框上/下方, 钳制到图像内且仍不压鳍框
             for cy in (rect.top() - 2 - th, rect.bottom() + 2):
-                cx = min(max(2, rect.left() + 2),
-                         max(2, target.width() - 2 - tw))
-                cy = min(max(0, cy), max(0, target.height() - th))
+                cx = min(max(left_lim, rect.left() + 2),
+                         max(left_lim, right_lim - tw))
+                cy = min(max(top_lim, cy), max(top_lim, bot_lim - th))
                 r = QRect(cx, cy, tw, th)
                 if (not any(r.intersects(b) for b in box_rects)
                         and not any(r.intersects(o) for o in placed)):
@@ -95,33 +99,31 @@ def draw_boxes(target, boxes, orig_w, orig_h):
         placed.append(label_rect)
         p.drawText(label_rect.left(),
                    label_rect.top() + fm.ascent(), text)
-    p.end()
-def draw_label(target, text):
-    """在图像左下角叠加半透明底文字标签 (shot_id 等)。"""
-    p = QPainter(target)
+
+
+def _paint_label(p, target, text):
+    """在 target 矩形 (图像区域) 的左下角叠加半透明底文字标签 (shot_id 等)。"""
     f = p.font()
-    f.setPixelSize(max(12, min(56, target.width() // 14)))
+    f.setPixelSize(max(12, min(56, int(target.width()) // 14)))
     f.setBold(True)
     p.setFont(f)
     fm = p.fontMetrics()
     w, h = fm.horizontalAdvance(text) + 12, fm.height() + 6
-    rect = QRect(2, target.height() - h - 2, w, h)
+    rect = QRect(int(target.x()) + 2,
+                 int(target.y() + target.height()) - h - 2, w, h)
     p.fillRect(rect, QColor(0, 0, 0, 140))
     p.setPen(Qt.GlobalColor.white)
     p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
-    p.end()
 # ---------------------------------------------------------------------------
 # 缩略图后台加载 (多线程分片 + 磁盘缓存)
 # ---------------------------------------------------------------------------
 class ThumbLoader(QThread):
-    loaded = pyqtSignal(str, QImage)
+    """加载干净缩略图 (不带框/标签); 框/标签由 delegate 在绘制时叠加。"""
+    loaded = pyqtSignal(str, QImage, int, int)  # path, 图, 原图宽, 原图高
 
-    def __init__(self, paths, boxes=None, labels=None, cache_dir=None,
-                 thumb_size=THUMB_SIZE):
+    def __init__(self, paths, cache_dir=None, thumb_size=THUMB_SIZE):
         super().__init__()
         self._paths = list(paths)
-        self._boxes = boxes or {}
-        self._labels = labels or {}
         self._cache_dir = cache_dir
         self._thumb_size = thumb_size
         self._stop = False
@@ -200,27 +202,24 @@ class ThumbLoader(QThread):
                 continue  # 单个文件失败不中断整个加载
             if img is None or img.isNull():
                 continue
-            boxes = self._boxes.get(p)
-            if boxes:
-                draw_boxes(img, boxes, ow, oh)
-            label = self._labels.get(p) or self._labels.get(os.path.basename(p))
-            if label:
-                draw_label(img, label)
-            self.loaded.emit(p, img)
+            self.loaded.emit(p, img, ow, oh)
 
 
 class DolphinLoader(ThumbLoader):
     """海豚配对页加载器: 每个条目两张鳍图 (上 DL / 下 DR) 合成一张缩略图。
     每张鳍图先居中裁剪到鳍格宽高比再缩放填满, 拉伸变形由裁剪避免。
     self._paths 的元素为 (key, dl_fid, dr_fid, dl_path, dr_path, social_label);
-    复用 _load_clean 的磁盘缓存。"""
+    复用 _load_clean 的磁盘缓存。合成图只含两张鳍图, FinID/名称/社交标签
+    由 ThumbOverlayDelegate 在绘制时叠加。"""
+
+    loaded = pyqtSignal(str, QImage)  # 合成图无原图坐标, 不带原图尺寸
 
     def run(self):
         for key, dl_fid, dr_fid, dl, dr, social in self._paths:
             if self._stop:
                 break
             try:
-                img = self._compose(key, dl_fid, dr_fid, dl, dr, social)
+                img = self._compose(dl, dr)
             except Exception:
                 continue  # 单只失败不中断整个加载
             if img is not None and not img.isNull():
@@ -253,14 +252,13 @@ class DolphinLoader(ThumbLoader):
         idx = int(hashlib.md5(label.encode("utf-8")).hexdigest(), 16)
         return DolphinLoader._SOCIAL_COLORS[idx % len(DolphinLoader._SOCIAL_COLORS)]
 
-    def _compose(self, name, dl_fid, dr_fid, dl, dr, social_label=""):
+    def _compose(self, dl, dr):
         w, cell = THUMB_SIZE, FIN_CELL_H
         out = QImage(w, cell * 2, QImage.Format.Format_RGB32)
         out.fill(QColor(100, 100, 100))
         p = QPainter(out)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        for i, (path, tag, fid) in enumerate(
-                ((dl, "DL", dl_fid), (dr, "DR", dr_fid))):
+        for i, path in enumerate((dl, dr)):
             y0 = i * cell
             if path:
                 img, _, _ = self._load_clean(path)
@@ -270,45 +268,6 @@ class DolphinLoader(ThumbLoader):
                     t = img.scaled(w, cell, Qt.AspectRatioMode.IgnoreAspectRatio,
                                    Qt.TransformationMode.SmoothTransformation)
                     p.drawImage(0, y0, t)
-            p.setPen(QColor(255, 255, 255))
-            f = p.font()
-            f.setPixelSize(14)
-            f.setBold(True)
-            p.setFont(f)
-            if fid is not None:  # 每格左下角标 DL/DR, 右侧标对应 FinID
-                fid_s = str(fid)
-                p.drawText(6, y0 + cell - 8, fid_s)
-        # SocialStructure 标签: 左上角, 每个组用自己的颜色
-        if social_label:
-            f = p.font()
-            f.setPixelSize(13)
-            f.setBold(True)
-            p.setFont(f)
-            fm = p.fontMetrics()
-            x = 6
-            y = 18
-            parts = [s.strip() for s in social_label.split(",")
-                     if s.strip()]
-            for i, part in enumerate(parts):
-                p.setPen(self._social_color(part))
-                p.drawText(x, y, part)
-                x += fm.horizontalAdvance(part)
-                if i < len(parts) - 1:
-                    p.setPen(QColor(255, 255, 255))
-                    p.drawText(x, y, ", ")
-                    x += fm.horizontalAdvance(", ")
-        # 海豚编号居中叠在上下背鳍之间 (半透明底条保证可读)
-        f = p.font()
-        f.setPixelSize(16)
-        f.setBold(True)
-        p.setFont(f)
-        fm = p.fontMetrics()
-        tw, th = fm.horizontalAdvance(name), fm.height()
-        rect = QRect((w - tw) // 2 - 8, cell - th // 2 - 2,
-                     tw + 16, th + 4)
-        p.fillRect(rect, QColor(0, 0, 0, 0))
-        p.setPen(Qt.GlobalColor.white)
-        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, name)
         p.end()
         return out
 
@@ -345,6 +304,7 @@ class ThumbOverlayDelegate(QStyledItemDelegate):
         if best_set and index.data(Qt.ItemDataRole.UserRole) in best_set:
             painter.setPen(QPen(QColor(255, 0, 0), 3))
             painter.drawRect(icon_rect.adjusted(3, 3, -3, -3))
+        self._paint_overlays(painter, opt, index, icon_rect)
         if text:
             painter.setFont(opt.font)
             bar_h = opt.fontMetrics.height() + 6
@@ -357,6 +317,75 @@ class ThumbOverlayDelegate(QStyledItemDelegate):
             painter.drawText(bar.adjusted(4, 0, -4, 0),
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided)
         painter.restore()
+
+    def _paint_overlays(self, painter, opt, index, icon_rect):
+        """在图标上实时叠加鳍框/标签 (缩略图本身保持干净)。
+        普通网格: 按 _orig_dims 把框坐标映射进等比缩放后的图标区域;
+        海豚页: 画名称/DL/DR FinID/彩色社交标签 (数据在条目和 _social)。"""
+        grid = opt.widget
+        if grid is None:
+            return
+        data = index.data(Qt.ItemDataRole.UserRole)
+        if isinstance(data, tuple) and hasattr(grid, "_dolphin_data"):
+            self._paint_dolphin(painter, icon_rect, grid, data)
+        elif isinstance(data, str):
+            dims = getattr(grid, "_orig_dims", {}).get(data)
+            if not dims:
+                return
+            ow, oh = dims
+            # 原图等比缩放进图标区域并居中 (QRectF 无 scaled, 手动算)
+            scale = min(icon_rect.width() / ow, icon_rect.height() / oh)
+            target = QRectF(0, 0, ow * scale, oh * scale)
+            target.moveCenter(QRectF(icon_rect).center())
+            boxes = getattr(grid, "_boxes", {}).get(data)
+            if boxes:
+                _paint_boxes(painter, target, boxes, ow, oh)
+            labels = getattr(grid, "_labels", {})
+            label = labels.get(data) or labels.get(os.path.basename(data))
+            if label:
+                _paint_label(painter, target, label)
+
+    @staticmethod
+    def _paint_dolphin(painter, icon_rect, grid, data):
+        """海豚格覆盖层: 编号居中叠在上下格之间, FinID 在每格左下角,
+        SocialStructure 标签在左上角 (每个组自己的颜色)。"""
+        name, dl_fid, dr_fid, _, _ = data
+        cell = icon_rect.height() // 2
+        x0, y0 = icon_rect.left(), icon_rect.top()
+        f = painter.font()
+        f.setBold(True)
+        # DL/DR FinID: 每格左下角
+        f.setPixelSize(14)
+        painter.setFont(f)
+        painter.setPen(Qt.GlobalColor.white)
+        for i, fid in enumerate((dl_fid, dr_fid)):
+            if fid is not None:
+                painter.drawText(x0 + 6, y0 + i * cell + cell - 8, str(fid))
+        # SocialStructure 标签: 左上角, 每个组用自己的颜色
+        social = getattr(grid, "_social", {}).get(name, "")
+        if social:
+            f.setPixelSize(13)
+            painter.setFont(f)
+            fm = painter.fontMetrics()
+            x, y = x0 + 6, y0 + 18
+            parts = [s.strip() for s in social.split(",") if s.strip()]
+            for i, part in enumerate(parts):
+                painter.setPen(DolphinLoader._social_color(part))
+                painter.drawText(x, y, part)
+                x += fm.horizontalAdvance(part)
+                if i < len(parts) - 1:
+                    painter.setPen(QColor(255, 255, 255))
+                    painter.drawText(x, y, ", ")
+                    x += fm.horizontalAdvance(", ")
+        # 海豚编号: 居中叠在上下背鳍之间
+        f.setPixelSize(16)
+        painter.setFont(f)
+        fm = painter.fontMetrics()
+        tw, th = fm.horizontalAdvance(name), fm.height()
+        rect = QRect(x0 + (icon_rect.width() - tw) // 2 - 8,
+                     y0 + cell - th // 2 - 2, tw + 16, th + 4)
+        painter.setPen(Qt.GlobalColor.white)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, name)
 
 
 class ImageGrid(QListWidget):
@@ -393,6 +422,7 @@ class ImageGrid(QListWidget):
         self._labels = {}
         self._loaded = set()    # 已加载缩略图的路径
         self._pending = set()   # 已派发给加载线程、尚未完成的路径
+        self._orig_dims = {}    # path -> (原图宽, 原图高), delegate 画框用
         self._cache_dir = None
         self._full_open_exclude = None
         self._full_open_best = None
@@ -441,6 +471,10 @@ class ImageGrid(QListWidget):
         if item is not None:
             item.setIcon(QIcon())
         self._load_visible()
+
+    def repaint_path(self, path):
+        """框/标签数据变了但图像文件没变: 只重绘, 不重新解码。"""
+        self.viewport().update()
 
     def _drop_ok(self, event):
         if not event.mimeData().hasFormat(MIME_PATHS):
@@ -580,6 +614,7 @@ class ImageGrid(QListWidget):
             self._items[p] = item
         if not paths:
             return
+        self._orig_dims = {}
         # 磁盘缓存目录: 图片公共路径下的 .doris_thumbs (跨 tab 共享)
         try:
             self._cache_dir = os.path.join(os.path.commonpath(paths),
@@ -631,8 +666,7 @@ class ImageGrid(QListWidget):
         # 多线程分片加载 (大 JPEG 解码是瓶颈, 并行数倍提速)
         n_workers = min(8, (os.cpu_count() or 4), len(paths))
         for k in range(n_workers):
-            loader = ThumbLoader(paths[k::n_workers], self._boxes,
-                                 self._labels, self._cache_dir)
+            loader = ThumbLoader(paths[k::n_workers], cache_dir=self._cache_dir)
             loader.loaded.connect(self._set_thumb)
             loader.finished.connect(
                 lambda l=loader: self._on_loader_done(l))
@@ -653,9 +687,10 @@ class ImageGrid(QListWidget):
         super().resizeEvent(event)
         self._lazy_timer.start()
 
-    def _set_thumb(self, path, img):
+    def _set_thumb(self, path, img, ow, oh):
         self._pending.discard(path)
         self._loaded.add(path)
+        self._orig_dims[path] = (ow, oh)
         item = self._items.get(path)
         if item is not None:
             item.setIcon(QIcon(QPixmap.fromImage(img)))
@@ -872,6 +907,29 @@ class ZoomableView(QGraphicsView):
             super().keyPressEvent(event)
 
 
+class BoxesOverlayItem(QGraphicsItem):
+    """大图查看窗口的覆盖层: 鳍框 + 左下角标签, 画在干净原图之上。
+    纯装饰, 不接收鼠标事件; 编辑模式由 ResizableBoxItem 负责。"""
+
+    def __init__(self, boxes, label, image_w, image_h, parent=None):
+        super().__init__(parent)
+        self._boxes = boxes
+        self._label = label
+        self._w = image_w
+        self._h = image_h
+
+    def boundingRect(self):
+        m = 4  # 框线宽留出一点边
+        return QRectF(-m, -m, self._w + 2 * m, self._h + 2 * m)
+
+    def paint(self, painter, option, widget=None):
+        target = QRect(0, 0, self._w, self._h)
+        if self._boxes:
+            _paint_boxes(painter, target, self._boxes, self._w, self._h)
+        if self._label:
+            _paint_label(painter, target, self._label)
+
+
 class ImageViewerDialog(QDialog):
     """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小, Ctrl+W 关闭。
     可选 on_exclude / on_best / on_misc 回调, 在大图窗口中按 Delete / B / M
@@ -897,6 +955,7 @@ class ImageViewerDialog(QDialog):
         self._add_mode = False
         self._add_start = None
         self._add_rect_item = None
+        self._overlay_item = None
         self.resize(1200, 800)
 
         self._scene = QGraphicsScene(self)
@@ -915,36 +974,48 @@ class ImageViewerDialog(QDialog):
         path = self._paths[index]
         reader = QImageReader(path)
         pm = QPixmap.fromImage(reader.read())
-        boxes = self._boxes.get(path)
-        if boxes and not pm.isNull():
-            draw_boxes(pm, boxes, pm.width(), pm.height())
-        label = self._labels.get(path)
-        if label and not pm.isNull():
-            draw_label(pm, label)
         if self._item is None:
             self._item = self._scene.addPixmap(pm)
         else:
             self._item.setPixmap(pm)
-        self._scene.setSceneRect(self._scene.itemsBoundingRect())
+        if not pm.isNull():
+            # 场景范围只按原图算, 避免覆盖层/编辑框撑大 fitInView
+            self._scene.setSceneRect(QRectF(pm.rect()))
+        self._refresh_overlay()
         self.setWindowTitle("%s  (%d/%d)" % (os.path.basename(path),
                                              index + 1, len(self._paths)))
         if not pm.isNull():
-            self.view.fitInView(self._scene.itemsBoundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
+            self.view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def _refresh_overlay(self):
+        """按当前图片重建鳍框/标签覆盖层 (干净 pixmap 之上的纯装饰项)。"""
+        if self._overlay_item is not None:
+            self._scene.removeItem(self._overlay_item)
+            self._overlay_item = None
+        path = self._paths[self._index]
+        pm = self._item.pixmap() if self._item is not None else None
+        if pm is None or pm.isNull():
+            return
+        overlay = BoxesOverlayItem(self._boxes.get(path),
+                                   self._labels.get(path),
+                                   pm.width(), pm.height())
+        overlay.setZValue(1)
+        self._scene.addItem(overlay)
+        self._overlay_item = overlay
 
     def _enter_edit_mode(self):
-        """进入框编辑模式: 显示无框原图, 并在其上放置可交互框。"""
+        """进入框编辑模式: 隐藏覆盖层, 在干净原图上放置可交互框。"""
         self._edit_mode = True
-        path = self._paths[self._index]
-        reader = QImageReader(path)
-        pm = QPixmap.fromImage(reader.read())
-        if not pm.isNull():
-            self._item.setPixmap(pm)
+        if self._overlay_item is not None:
+            self._overlay_item.setVisible(False)
         self.view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        path = self._paths[self._index]
+        pm = self._item.pixmap() if self._item is not None else None
         boxes = self._boxes.get(path, [])
         self._edit_original_rects = []
         self._edit_items = []
-        w = pm.width() if not pm.isNull() else 0
-        h = pm.height() if not pm.isNull() else 0
+        w = pm.width() if pm is not None and not pm.isNull() else 0
+        h = pm.height() if pm is not None and not pm.isNull() else 0
         for box in boxes:
             rb = ResizableBoxItem(box, w, h)
             self._scene.addItem(rb)
@@ -977,7 +1048,11 @@ class ImageViewerDialog(QDialog):
         self._edit_original_rects = []
         self._edit_mode = False
         self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self._show(self._index)
+        # 覆盖层读的是最新的 self._boxes, 直接重建即可, 不必重新解码原图
+        self._refresh_overlay()
+        pm = self._item.pixmap() if self._item is not None else None
+        if pm is not None and not pm.isNull():
+            self._scene.setSceneRect(QRectF(pm.rect()))
 
     def _enter_add_mode(self):
         """进入画新鳍框模式: 左键拖拽画框。"""
@@ -1019,7 +1094,7 @@ class ImageViewerDialog(QDialog):
         updated = self._box_editor(path, "add", None, box)
         if updated is not None:
             self._boxes[path] = updated
-        self._show(self._index)
+        self._refresh_overlay()  # 覆盖层重读 self._boxes, 不必重新解码
 
     def eventFilter(self, obj, event):
         if not self._add_mode or obj is not self.view.viewport():

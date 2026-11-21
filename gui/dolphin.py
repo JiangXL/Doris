@@ -21,7 +21,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF
 from .common import (
     ImageGrid, DolphinLoader, ThumbOverlayDelegate, ZoomableView,
     ImageViewerDialog, MIME_PATHS, THUMB_SIZE, FIN_CELL_H, BOX_COLORS,
-    draw_boxes, draw_label, ThumbLoader
+    ThumbLoader
 )
 
 class DolphinTab(QListWidget):
@@ -462,17 +462,22 @@ class CandidateList(QListWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
         self.viewport().setAcceptDrops(True)
+        self.setItemDelegate(ThumbOverlayDelegate(self))
         self._loaders = []
         self._items = {}
         self._imgs = {}  # path -> 已加载的 QImage (重缩放用)
+        self._labels = {}      # sim 标签由 delegate 叠加, 此处只存数据
+        self._orig_dims = {}   # path -> (原图宽, 原图高)
 
     def show_candidates(self, fids, paths, labels):
         """(fids, paths, labels): 后台分片加载候选鳍缩略图,
-        'Fin001 sim=0.83' 由加载器叠加在图上。"""
+        'Fin001 sim=0.83' 由 delegate 叠加在图上。"""
         self._stop_loaders()
         self.clear()
         self._items = {}
         self._imgs = {}
+        self._labels = labels or {}
+        self._orig_dims = {}
         for fid, p in zip(fids, paths):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, str(fid))
@@ -489,14 +494,15 @@ class CandidateList(QListWidget):
             cache_dir = None
         n = min(4, os.cpu_count() or 4, len(paths))
         for k in range(n):
-            loader = ThumbLoader(paths[k::n], labels=labels,
-                                 cache_dir=cache_dir, thumb_size=768)
+            loader = ThumbLoader(paths[k::n], cache_dir=cache_dir,
+                                 thumb_size=768)
             loader.loaded.connect(self._set_thumb)
             loader.start()
             self._loaders.append(loader)
 
-    def _set_thumb(self, path, img):
+    def _set_thumb(self, path, img, ow, oh):
         self._imgs[path] = img
+        self._orig_dims[path] = (ow, oh)
         item = self._items.get(path)
         if item is not None:
             # QIcon 不会把小的源图放大到 iconSize, 需先手动放大再设入,
