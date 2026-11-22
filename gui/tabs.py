@@ -1626,7 +1626,7 @@ class StatisticsTab(QWidget):
         fig.canvas.draw_idle()
 
     def _draw_traffic(self, ax, traffic_data, fontsize=7):
-        """Traffic 图: x=shot 时间, 左 y=unique DolphinID 数, 右 y=Distance。
+        """Traffic 图: x=shot 时间 
         """
         from matplotlib.dates import DateFormatter
         datetimes, dph_counts, distances = traffic_data
@@ -1634,21 +1634,15 @@ class StatisticsTab(QWidget):
             ax.set_title("Traffic (no data)")
             ax.axis("off")
             return
-        ax2 = ax.twinx()
-        ax.plot(datetimes, dph_counts, color="#4C72B0", marker="o",
-                linestyle="None", markerfacecolor="#4C72B0",
-                markeredgecolor="none", alpha=0.5, label="Unique DolphinID")
-        ax.set_ylabel("Dolphin Count", color="#4C72B0")
-        ax.tick_params(axis="y", labelcolor="#4C72B0")
         # 过滤掉 None/NaN 的距离点
         dist_x = [d for d, dist in zip(datetimes, distances) if dist is not None]
         dist_y = [dist for dist in distances if dist is not None]
         if dist_y:
-            ax2.plot(dist_x, dist_y, color="#DD8452", marker="o",
-                     linestyle="None", markerfacecolor="#DD8452",
-                     markeredgecolor="none", alpha=0.5, label="Distance")
-            ax2.set_ylabel("Distance (m)", color="#DD8452")
-            ax2.tick_params(axis="y", labelcolor="#DD8452")
+            ax.plot(dist_x, dist_y, color="black", marker="o",
+                     linestyle="None", markerfacecolor="None",
+                     markeredgecolor="black", alpha=1, label="Distance")
+            ax.set_ylabel("Distance (m)", color="#DD8452")
+            ax.tick_params(axis="y", labelcolor="#DD8452")
         ax.set_title("Traffic")
         ax.set_xlabel("Shot Time")
         ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))

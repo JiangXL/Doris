@@ -1242,7 +1242,7 @@ class Dataset:
                 and "fullpath" in df.columns:
             sub = df.dropna(subset=["DolphinID", "fullpath"])
             for name, g in sub.groupby("DolphinID", sort=True):
-                sorted_g = g.sort_values(by="Aspect")
+                sorted_g = g.sort_values(by=["Aspect", "Path"])
                 groups[str(name)] = [p for p in sorted_g["fullpath"]
                                      if isinstance(p, str)]
         self._cache[key] = groups

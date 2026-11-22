@@ -20,7 +20,7 @@ from .dolphin import DolphinTab, MatchPanel, CandidateList
 from .common import ImageGrid
 from resource_paths import resource_path
 
-DORIS_VERSION = "0.2.4"
+DORIS_VERSION = "0.2.5"
 
 
 class _FeatureWorker(QThread):
