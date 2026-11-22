@@ -20,8 +20,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF
 
 from .common import (
     ImageGrid, DolphinLoader, ThumbOverlayDelegate, ZoomableView,
-    ImageViewerDialog, MIME_PATHS, THUMB_SIZE, FIN_CELL_H, BOX_COLORS,
-    ThumbLoader
+    ImageViewerDialog, open_image_viewer, MIME_PATHS, THUMB_SIZE, FIN_CELL_H,
+    BOX_COLORS, ThumbLoader
 )
 
 class DolphinTab(QListWidget):
@@ -141,7 +141,7 @@ class DolphinTab(QListWidget):
             name, dl_fid, dr_fid, dl, dr = item.data(Qt.ItemDataRole.UserRole)
             path = dr if bottom else dl
             if path:
-                ImageViewerDialog([path], 0, self).exec()
+                open_image_viewer(ImageViewerDialog([path], 0, self))
         super().mouseDoubleClickEvent(event)
 
     def startDrag(self, actions):
@@ -416,7 +416,7 @@ class FinSlot(QLabel):
     # -- 双击打开大图查看窗口 --------------------------------------------------
     def mouseDoubleClickEvent(self, event):
         if self._path:
-            ImageViewerDialog([self._path], 0, self).exec()
+            open_image_viewer(ImageViewerDialog([self._path], 0, self))
         super().mouseDoubleClickEvent(event)
 
     # -- 候选拖入 = 确认配对 --------------------------------------------------
@@ -557,7 +557,7 @@ class CandidateList(QListWidget):
         if item is not None:
             p = item.data(Qt.ItemDataRole.UserRole + 1)
             if p:
-                ImageViewerDialog([p], 0, self).exec()
+                open_image_viewer(ImageViewerDialog([p], 0, self))
         super().mouseDoubleClickEvent(event)
 
     # -- 滚轮: 减小步长, 滚动更细腻 -------------------------------------------

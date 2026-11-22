@@ -705,7 +705,7 @@ class ImageGrid(QListWidget):
                                 on_move=self._full_open_move,
                                 box_editor=self._box_editor,
                                 allow_add_fin=self._allow_add_fin)
-        dlg.exec()
+        open_image_viewer(dlg)
 class _HandleItem(QGraphicsRectItem):
     """ResizableBoxItem 的 8 个拖拽把手 (角 + 边中点)。"""
 
@@ -931,6 +931,17 @@ class BoxesOverlayItem(QGraphicsItem):
             _paint_boxes(painter, target, self._boxes, self._w, self._h)
         if self._label:
             _paint_label(painter, target, self._label)
+
+
+_OPEN_VIEWERS = set()   # 保持 modeless 大图窗口的 Python 引用, 防 GC
+
+
+def open_image_viewer(dlg):
+    """Modeless 打开大图窗口: 不阻塞主窗口, 可同时开多个; 关闭后自动释放。"""
+    _OPEN_VIEWERS.add(dlg)
+    dlg.finished.connect(dlg.deleteLater)
+    dlg.finished.connect(lambda: _OPEN_VIEWERS.discard(dlg))
+    dlg.show()
 
 
 class ImageViewerDialog(QDialog):

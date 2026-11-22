@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRec
 from doris_dataset import Dataset, ASPECT_LABELS
 from .common import (
     ImageGrid, ThumbLoader, MIME_PATHS, THUMB_SIZE,
-    ZoomableView, ImageViewerDialog,
+    ZoomableView, ImageViewerDialog, open_image_viewer,
 )
 
 from .steps import (
@@ -781,7 +781,7 @@ class GroupedTab(QWidget):
                                 on_misc=_misc_for_middle
                                 if self._photo_type_setter is not None
                                 else None)
-        dlg.exec()
+        open_image_viewer(dlg)
 
     def set_groups(self, groups, tooltips=None, keep_current=False, boxes=None):
         """groups: dict[str, list[str]] — 组名 -> 图片路径列表 (有序)
