@@ -42,6 +42,16 @@ class Dataset:
                     self._fid_key)
             if "Aspect" in self.fin_df.columns:
                 self.fin_df.replace({"Aspect":"Others"}, "MISC", inplace=True)
+        # 标签列强制 object 类型: 全空的 CSV 列读出为 float64,
+        # 之后赋字符串 ("Dph001") / pd.NA 会报 TypeError
+        for col in ("FinID", "Aspect", "DolphinID", "SocialStructure"):
+            if col in self.fin_df.columns \
+                    and self.fin_df[col].dtype != object:
+                self.fin_df[col] = self.fin_df[col].astype(object)
+        if "SocialStructure" in self.photo_df.columns \
+                and self.photo_df["SocialStructure"].dtype != object:
+            self.photo_df["SocialStructure"] = \
+                self.photo_df["SocialStructure"].astype(object)
         if "PhotoName" in self.photo_df.columns:
             self.photo_df = self.photo_df.sort_values(by="PhotoName")
         self._cache = {}
@@ -354,7 +364,8 @@ class Dataset:
         if self.fin_df.empty or "FinID" not in self.fin_df.columns:
             return groups
         for fid, g in self.fin_df.dropna(subset=["FinID"]).groupby("FinID", sort=True):
-            groups[fid] = list(g["fullpath"])
+            sorted_g = g.sort_values(by="Path")
+            groups[fid] = list(sorted_g["fullpath"])
         return groups
 
     def rename_fin_ids(self):
@@ -593,7 +604,7 @@ class Dataset:
                 pass
         return self.connection_matrix
 
-    def similar_fins(self, group, threshold=0.4):
+    def similar_fins(self, group, threshold=0.2):
         """与当前 FinID 两两相似度 > threshold 的其它个体鳍图 (同 aspect)。
         只比较、只返回 BestInShot 标记的鳍图。
         返回 (paths, labels): 按相似度降序, labels = 'Fin001 sim=0.83'。"""
@@ -1135,6 +1146,10 @@ class Dataset:
         changed = False
         if "DolphinID" not in df.columns:
             df["DolphinID"] = pd.NA
+            changed = True
+        elif df["DolphinID"].dtype != object:
+            # CSV 中空列读出为 float64, 赋字符串 ("Dph001") 会报 TypeError
+            df["DolphinID"] = df["DolphinID"].astype(object)
             changed = True
         sub = df.dropna(subset=["FinID"])
         sub = sub[sub["FinID"] != "0"]  # 0 = 未分类

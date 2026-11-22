@@ -1591,7 +1591,7 @@ class StatisticsTab(QWidget):
             norm = np.zeros_like(counts)
         node_sizes = (200 + norm * 1000).tolist()
         # 增大斥力常数 k 并增加迭代次数, 让节点/标签尽量不重叠
-        k = max(4.0, 10.0 / np.sqrt(len(nodes)))
+        k = max(20.0, 10.0 / np.sqrt(len(nodes)))
         pos = nx.spring_layout(G, weight="weight", seed=42, k=k,
                                iterations=200, threshold=1e-4)
         weights = [d["weight"] for _, _, d in G.edges(data=True)]
@@ -1615,7 +1615,7 @@ class StatisticsTab(QWidget):
             font_color="#377eb8", bbox=dict(boxstyle="round,pad=0.12",
                                             facecolor="white",
                                             edgecolor="none", alpha=0.85))
-        ax.set_title("%s (%d connected)" % (title, len(nodes)))
+        ax.set_title("%s (%d connected dolphin)" % (title, len(nodes)))
         ax.axis("off")
 
     def _social_network(self, fig, social_data, title="Dolphin social network"):
@@ -1641,8 +1641,8 @@ class StatisticsTab(QWidget):
             ax.plot(dist_x, dist_y, color="black", marker="o",
                      linestyle="None", markerfacecolor="None",
                      markeredgecolor="black", alpha=1, label="Distance")
-            ax.set_ylabel("Distance (m)", color="#DD8452")
-            ax.tick_params(axis="y", labelcolor="#DD8452")
+            ax.set_ylabel("Distance (m)")
+            ax.tick_params(axis="y")
         ax.set_title("Traffic")
         ax.set_xlabel("Shot Time")
         ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))

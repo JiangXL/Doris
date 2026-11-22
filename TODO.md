@@ -41,3 +41,6 @@
 
 [] FinID/DolphinID relationship check
 [] Reread orignal fin image instead of thumb image in dolphin overview
+[] 同一 full-view 窗口样式: 右键菜单、信息条
+[] 设计 doris_dataset 的成员变量, 构造 fin/dph
+[] configure file

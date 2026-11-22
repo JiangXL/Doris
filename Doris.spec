@@ -40,6 +40,7 @@ a = Analysis(
         ('models/fin_quality_detection_resnet101_final.onnx', 'models'),
         ('models/fin_aspect_classification_resnet101_final.onnx', 'models'),
         ('models/megadescriptor_dolphin_ft.onnx', 'models'),
+        ('Delphinus_IAU.png', '.'),
     ],
     hiddenimports=[
         'Step1a_scan_photo_exif',
