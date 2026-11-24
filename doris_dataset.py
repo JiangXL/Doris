@@ -704,6 +704,31 @@ class Dataset:
             labels[p] = "%s (%d)" % (fid, n)
         return paths, labels
 
+    def fin_id_representatives(self):
+        """FinID -> (代表鳍图 fullpath, DolphinID 或 None, 鳍数)。
+        代表图按 _rep_fin_row 规则选 (BestInFin > BestInShot > 最清晰);
+        排除 "0" 未分类。供 Fin ID 页 Match 模式 "0" 组的拖放目标网格
+        (读一次缓存, 任何写回 CSV 的操作会清空缓存)。"""
+        key = "fin_id_representatives"
+        if key in self._cache:
+            return self._cache[key]
+        out = {}
+        df = self.fin_df
+        if not df.empty and "FinID" in df.columns \
+                and "fullpath" in df.columns:
+            keys = df["FinID"].map(self._fid_key)
+            sub = df[keys.notna() & (keys != "0")].copy()
+            sub["_fid"] = keys[sub.index]
+            for fid, g in sub.groupby("_fid", sort=True):
+                rep = self._rep_fin_row(g)
+                p = rep["fullpath"]
+                if not isinstance(p, str):
+                    continue
+                dph = rep["DolphinID"] if "DolphinID" in g.columns else None
+                out[fid] = (p, None if pd.isna(dph) else str(dph), len(g))
+        self._cache[key] = out
+        return out
+
     #  统计: FinID 鳍图数分布 / 部位占比
     def fin_id_counts(self):
         """[(label, clear_count, blur_count)]: 每个 FinID 的鳍图数,

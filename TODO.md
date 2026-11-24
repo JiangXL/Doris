@@ -47,10 +47,10 @@
 [] 后台计算过程？
 
 11/23, 柳佳蓉
-1. 记住全屏窗口的大小
+1. 记住全屏窗口的大小 [x]
 2. 修复 ShotType, PhotoType 的导入类型错误，或者类型检查
 3. 设计 Fin0 的候选捕捞框
-4. 新建背鳍后，直接赋予FinID/DphID? 不提取 deepfeature. 直接修改或指定背鳍的 ID?
+4. 新建背鳍后，直接赋予FinID/DphID? 不提取 deepfeature. 直接修改或指定背鳍的 ID?[x]
 5. 统一全屏窗口的标签样式。
 6. 同一背鳍缩略图标签样式。
 7. 更换 Dolphin Tab 的Match Mode 里的 connection matrix 为 similarity matrix

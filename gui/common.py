@@ -934,6 +934,7 @@ class BoxesOverlayItem(QGraphicsItem):
 
 
 _OPEN_VIEWERS = set()   # 保持 modeless 大图窗口的 Python 引用, 防 GC
+_LAST_VIEWER_SIZE = None   # 最近使用的大图窗口尺寸, 新窗口复用
 
 
 def open_image_viewer(dlg):
@@ -954,6 +955,9 @@ class ImageViewerDialog(QDialog):
                  on_exclude=None, on_best=None, on_misc=None, on_move=None,
                  box_editor=None, allow_add_fin=True):
         super().__init__(parent)
+        # 独立顶层窗口: 不带此 flag 时父化的 QDialog 会被窗口管理器当作
+        # 主窗口的瞬态窗口, 永远压在 Doris 主窗口之上
+        self.setWindowFlags(Qt.WindowType.Window)
         self._paths = paths
         self._index = index
         self._boxes = boxes or {}
@@ -971,7 +975,7 @@ class ImageViewerDialog(QDialog):
         self._add_start = None
         self._add_rect_item = None
         self._overlay_item = None
-        self.resize(1200, 800)
+        self.resize(_LAST_VIEWER_SIZE or QSize(1200, 800))
 
         self._scene = QGraphicsScene(self)
         self._item = None
@@ -982,6 +986,17 @@ class ImageViewerDialog(QDialog):
         lay.addWidget(self.view)
 
         self._show(index)
+
+    def resizeEvent(self, event):
+        global _LAST_VIEWER_SIZE
+        size = event.size()
+        _LAST_VIEWER_SIZE = size
+        # 与其它仍打开的大图窗口保持尺寸一致 (resize 只在尺寸不同时
+        # 再触发 resizeEvent, 一轮传播后全部相等, 不会往复)
+        for w in _OPEN_VIEWERS:
+            if w is not self and w.size() != size:
+                w.resize(size)
+        super().resizeEvent(event)
 
     def _show(self, index):
         index = max(0, min(index, len(self._paths) - 1))

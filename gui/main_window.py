@@ -190,6 +190,8 @@ class MainWindow(QMainWindow):
                 merger=ds.merge_fin_paths if title == "Fin ID" else None,
                 similar_mover=ds.move_to_fin_id
                 if title == "Fin ID" else None,
+                match_zero_provider=self._match_zero_rep_provider
+                if title == "Fin ID" else None,
                 empty_drop_handler=ds.split_to_new_fin_id
                 if title == "Fin ID" else None,
                 fin_id_remover=ds.remove_fin_id
@@ -535,6 +537,18 @@ class MainWindow(QMainWindow):
         y1 = max(y0 + 1, min(h, int(box[3])))
         return MainWindow._qimage_to_pil(
             qimg.copy(x0, y0, x1 - x0, y1 - y0))
+
+    def _match_zero_rep_provider(self):
+        """Fin ID 页 Match 模式 "0" 组: 每个 FinID 一张代表鳍图
+        (_rep_fin_row: BestInFin > BestInShot > 最清晰), 标签
+        FinXXX(DphXXX) xN。返回 (paths, labels, fid_of)。"""
+        reps = self.ds.fin_id_representatives()
+        paths, labels, fid_of = [], {}, {}
+        for fid, (p, dph, n) in reps.items():
+            paths.append(p)
+            labels[p] = "%s(%s) x%d" % (fid, dph or "-", n)
+            fid_of[p] = fid
+        return paths, labels, fid_of
 
     def _edit_box(self, path, action, index, new_box=None, image=None):
         """全图查看器的鳍框编辑回调: 更新/添加鳍框, 并刷新相关 tab 缩略图。

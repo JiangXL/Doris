@@ -480,7 +480,8 @@ class GroupedTab(QWidget):
                  shot_type_setter=None, shot_info_provider=None,
                  box_editor=None, photo_type_setter=None, similar_mover=None,
                  empty_drop_handler=None, dolphin_assigner=None,
-                 fin_id_remover=None, aspect_mover=None, parent=None):
+                 fin_id_remover=None, aspect_mover=None, parent=None,
+                 match_zero_provider=None):
         """mover: callable(paths, target_group) -> dict[old_path, new_path] 或 None
         full_resolver: callable(fin_path) -> 原始全图路径 或 None; 给定后中键鳍图可看原图
         full_boxes: 全图路径 -> 鳍框列表 (画在原图查看器上, 可选)
@@ -550,9 +551,13 @@ class GroupedTab(QWidget):
         self._shot_info_provider = shot_info_provider
         self._box_editor = box_editor
         self._photo_type_setter = photo_type_setter
+        self._match_zero_provider = match_zero_provider
         self.vsplit = None
         self.similar_grid = None
         self.excluded_grid = None
+        self._bottom_stack = None
+        self.rep_grid = None        # "0" 组 Match 模式: 各 FinID 代表鳍拖放目标
+        self._rep_fid_of = {}       # 代表图路径 -> FinID
         self._excluded = []         # [(参考组名, 鳍图路径)] 拖入排除区的记录
         self._needs_refresh = False  # 隐藏时标记脏, 切回前台再刷新
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -917,7 +922,18 @@ class GroupedTab(QWidget):
         bottom.addWidget(self._titled("排除区 (拖入 = 判定为不同个体)",
                                       self.excluded_grid))
         bottom.setSizes([600, 600])
-        self.vsplit.addWidget(bottom)
+        # 底部 stacked: 页 0 = 相似个体 + 排除区 (真实 FinID 组),
+        # 页 1 = 各 FinID 代表鳍 ("0" 未分类组)
+        self._bottom_stack = QStackedWidget()
+        self._bottom_stack.addWidget(bottom)
+        self.rep_grid = ImageGrid()
+        self.rep_grid.setDragEnabled(False)      # 只做拖放目标
+        self.rep_grid.set_accept_drops(True)
+        self.rep_grid.paths_dropped.connect(self._on_rep_drop)
+        self._bottom_stack.addWidget(self._titled(
+            "各 FinID 代表鳍 — 把上方未分类鳍拖到代表图上, 整 track 并入该 FinID",
+            self.rep_grid))
+        self.vsplit.addWidget(self._bottom_stack)
         self.vsplit.setSizes([500, 400])
         self.splitter.addWidget(self.vsplit)
 
@@ -935,6 +951,9 @@ class GroupedTab(QWidget):
         self.vsplit = None
         self.similar_grid = None
         self.excluded_grid = None
+        self._bottom_stack = None
+        self.rep_grid = None
+        self._rep_fid_of = {}
 
     def _refresh_excluded(self):
         """排除区只显示当前参考组的排除记录, 随组切换刷新。"""
@@ -944,6 +963,16 @@ class GroupedTab(QWidget):
         g = cur.data(Qt.ItemDataRole.UserRole) if cur else None
         paths = [p for gp, p in self._excluded if gp == g]
         self.excluded_grid.show_images(paths, labels=self._labels)
+
+    def _on_rep_drop(self, paths, target_path):
+        """Match 模式 "0" 组: 上方未分类鳍拖到某 FinID 代表图上, 整 track
+        并入该 FinID (等同侧边栏把 track 拖入该组)。"""
+        if not (self._tri and self._best_only):
+            return
+        fid = self._rep_fid_of.get(target_path)
+        if not fid:
+            return
+        self._on_drop(paths, fid, use_track=True)
 
     def _on_top_drop(self, paths):
         """拖入上半部: 来自排除区 -> 同 track 的鳍改回当前 FinID (track mover);
@@ -1200,8 +1229,14 @@ class GroupedTab(QWidget):
         item = self.group_list.currentItem()
         if item is None:
             return
-        paths = self._groups.get(item.data(Qt.ItemDataRole.UserRole), [])
-        if self._best_only and self._best_mark is not None:
+        group = item.data(Qt.ItemDataRole.UserRole)
+        paths = self._groups.get(group, [])
+        # "0" 组 Match 模式: 底部换成各 FinID 代表鳍拖放网格,
+        # 上方显示全部未分类鳍 (不按 BestInShot 过滤, 每张都要可拖)
+        zero_view = (self._tri and self._best_only
+                     and group == "0"
+                     and self._match_zero_provider is not None)
+        if self._best_only and self._best_mark is not None and not zero_view:
             paths = self._filter_best(paths)
         elif self._clear_only and self._clear_mark is not None:
             paths = [p for p in paths if self._clear_mark(p)]
@@ -1212,14 +1247,20 @@ class GroupedTab(QWidget):
             self.grid._best_in_fin = best_set
             if self._tri and self.similar_grid is not None:
                 self.similar_grid._best_in_fin = best_set
-        if self._tri and self.similar_grid is not None:
-            sim_paths, sim_labels = self._similar_provider(
-                item.data(Qt.ItemDataRole.UserRole))
-            labels = dict(self._labels)
-            labels.update(sim_labels)  # 相似度标签优先
-            self.similar_grid.show_images(sim_paths, labels=labels)
-            self._refresh_excluded()  # 排除区跟随当前参考组
-        self._update_shot_widgets(item.data(Qt.ItemDataRole.UserRole))
+        if self._tri:
+            if zero_view:
+                self._bottom_stack.setCurrentIndex(1)
+                rep_paths, rep_labels, rep_fid_of = self._match_zero_provider()
+                self._rep_fid_of = rep_fid_of
+                self.rep_grid.show_images(rep_paths, labels=rep_labels)
+            else:
+                self._bottom_stack.setCurrentIndex(0)
+                sim_paths, sim_labels = self._similar_provider(group)
+                labels = dict(self._labels)
+                labels.update(sim_labels)  # 相似度标签优先
+                self.similar_grid.show_images(sim_paths, labels=labels)
+                self._refresh_excluded()  # 排除区跟随当前参考组
+        self._update_shot_widgets(group)
 
     def _update_shot_widgets(self, group_name):
         """Continuous Shots 页: 根据当前 shot 更新 ShotType 下拉框与信息标签。"""
