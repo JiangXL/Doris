@@ -2,7 +2,7 @@
 """主窗口：组装所有标签页、数据集加载与跨页刷新。"""
 
 import os
-from collections import deque
+import re
 
 import pandas as pd
 
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QToolButton, QMenu, QStackedWidget, QListWidgetItem,
     QInputDialog,
 )
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QImage
 
 from doris_dataset import Dataset
@@ -22,24 +22,6 @@ from resource_paths import resource_path
 
 DORIS_VERSION = "0.2.5"
 
-
-class _FeatureWorker(QThread):
-    """后台重算深度特征/相似度, 避免 GUI 线程做 ONNX 推理时卡死。"""
-
-    done = pyqtSignal()
-    failed = pyqtSignal(str)
-
-    def __init__(self, fn, parent=None):
-        super().__init__(parent)
-        self._fn = fn
-
-    def run(self):
-        try:
-            self._fn()
-        except Exception as e:
-            self.failed.emit(str(e))
-            return
-        self.done.emit()
 
 class MainWindow(QMainWindow):
     def __init__(self, root=None):
@@ -52,8 +34,6 @@ class MainWindow(QMainWindow):
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
         self._group_tabs = []   # 未 load 前为空, 供 _on_tab_changed 安全遍历
         self._stats_tab = None
-        self._feat_jobs = deque()      # 待执行的特征重算任务 (串行)
-        self._feat_worker = None       # 正在执行的后台特征重算线程
         self.tabs = QTabWidget()
         # 切到统计页时惰性重算, 保证任何改组后看到的都是最新数据
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -122,9 +102,6 @@ class MainWindow(QMainWindow):
         # 退出前停掉所有缩略图加载线程, 否则线程在解释器退出时析构会段错误
         for i in range(self.tabs.count()):
             self._stop_thumb_loaders(self.tabs.widget(i))
-        # 等待正在运行的特征重算线程, 避免 .npy 写一半被中断
-        if getattr(self, "_feat_worker", None) is not None:
-            self._feat_worker.wait(30000)
         super().closeEvent(event)
 
     def _clear_data_tabs(self):
@@ -561,8 +538,8 @@ class MainWindow(QMainWindow):
 
     def _edit_box(self, path, action, index, new_box=None, image=None):
         """全图查看器的鳍框编辑回调: 更新/添加鳍框, 并刷新相关 tab 缩略图。
-        image 为查看器已解码的原图 (QImage), 避免数据集重复解码;
-        深度特征/相似度重算较贵 (ONNX 推理), 放到后台线程执行。"""
+        image 为查看器已解码的原图 (QImage), 避免数据集重复解码。
+        不做深度特征重算: 矩阵用占位值扩展, 新鳍由用户直接指定 FinID。"""
         crop = (self._make_crop_pil(image, new_box)
                 if image is not None and new_box is not None else None)
         if action == "update":
@@ -573,8 +550,6 @@ class MainWindow(QMainWindow):
             if new_box is not None:
                 self.ds.edit_fin_box(path, old_box, new_box, crop=crop)
                 self._refresh_fin_boxes_on_tabs(path)
-                self._enqueue_feature_job(
-                    lambda: self.ds.replace_feature_for_box(path, new_box))
                 return self.ds.fin_boxes().get(path, [])
             return None
         if action == "add" and new_box is not None:
@@ -585,51 +560,71 @@ class MainWindow(QMainWindow):
             if not pd.isna(shot_id):
                 self.ds.assign_track_ids_by_iou(shot_id)
             full = self.ds.fin_df.at[new_idx, "fullpath"]
-            ident = self.ds.fin_df.at[new_idx, "identity"]
-            # 新鳍先显示 (延迟一帧重建), 特征后台补算
+            # 相似度/特征矩阵用占位值扩展 (零特征 => 与其余鳍相似度 0, 自身 1);
+            # Cluster Fin 未跑过 (矩阵文件不存在) 时跳过
+            feat_file = os.path.join(self.ds.meta_dir, "FIN_DEEPFEATURES.npy")
+            if os.path.isfile(feat_file):
+                import numpy as np
+                d = np.load(feat_file).shape[1]
+                self.ds._expand_similarity_for_new_fin(np.zeros((1, d)))
+            # 新鳍先显示 (延迟一帧重建), 再让用户指定 FinID
             QTimer.singleShot(0, self._refresh_tabs)
-            self._enqueue_feature_job(lambda: self._after_add_fin(full, ident))
+            self._prompt_new_fin_id(new_idx, full)
+            QTimer.singleShot(0, self._refresh_tabs)
             return self.ds.fin_boxes().get(path, [])
         return None
 
-    def _after_add_fin(self, full, ident):
-        """新增鳍的后台任务: 提特征并扩展相似度矩阵。"""
-        feat = self.ds.extract_feature(full)
-        if feat is None:
+    def _prompt_new_fin_id(self, new_idx, full):
+        """新增鳍后让用户选择 FinID。
+        候选只含与新鳍同 aspect 的 FinID, 排除同原图 (同一张照片的多个鳍
+        必然不同个体) 的 FinID; 同 shot (连拍) 的 FinID 最可能是同一海豚,
+        排在最前。显示 FinXXX(DphXXX)。Cancel/"0" 留未分类。"""
+        df = self.ds.fin_df
+        if "FinID" not in df.columns:
             return
-        # 任务排队期间若又添加了新鳍, 最后一行已变, 扩展会错位, 放弃并提示
-        if self.ds.fin_df.empty or \
-                self.ds.fin_df["identity"].iloc[-1] != ident:
-            raise RuntimeError(
-                "连续添加鳍框导致相似度未更新, 请重新运行 Cluster Fin")
-        self.ds._expand_similarity_for_new_fin(feat)
+        keys = df["FinID"].map(self.ds._fid_key)
+        valid = keys.notna() & (keys != "0")
+        if "Aspect" in df.columns:
+            aspect = str(df.at[new_idx, "Aspect"])
+            if aspect and aspect != "nan":
+                valid &= df["Aspect"].astype(str) == aspect
+        photo = str(df.at[new_idx, "PhotoName"])
+        shot = df.at[new_idx, "ShotID"]
+        photo_fids = set(keys[valid & (df["PhotoName"].astype(str) == photo)])
+        shot_fids = set(keys[valid & (df["ShotID"] == shot)]) - photo_fids
+        other_fids = set(keys[valid]) - shot_fids - photo_fids
+        # 每个 FinID 的 DolphinID (无则显示 -)
+        dph = {}
+        if "DolphinID" in df.columns:
+            for fid in shot_fids | other_fids:
+                vals = df.loc[valid & (keys == fid), "DolphinID"] \
+                    .dropna().unique()
+                dph[fid] = str(vals[0]) if len(vals) else "-"
 
-    def _enqueue_feature_job(self, fn):
-        """排队一个后台特征重算任务 (串行执行, 避免 .npy 写竞争)。"""
-        self._feat_jobs.append(fn)
-        self._pump_feature_jobs()
+        def disp(fid):
+            return "%s(%s)" % (fid, dph.get(fid, "-"))
 
-    def _pump_feature_jobs(self):
-        if self._feat_worker is not None or not self._feat_jobs:
+        items = [(disp(f), f) for f in sorted(shot_fids)]
+        items += [("0", "0"), ("New Fin ID...", "new")]
+        items += [(disp(f), f) for f in sorted(other_fids)]
+        labels = [d for d, _ in items]
+        text, ok = QInputDialog.getItem(
+            self, "Add Fin", "Assign new fin to FinID:", labels, 0, True)
+        if not ok:
             return
-        worker = _FeatureWorker(self._feat_jobs.popleft(), self)
-        worker.done.connect(self._on_feature_job_done)
-        worker.failed.connect(self._on_feature_job_failed)
-        worker.finished.connect(worker.deleteLater)
-        self._feat_worker = worker
-        worker.start()
-
-    def _on_feature_job_done(self):
-        self._feat_worker = None
-        self._refresh_tabs()  # 相似度已更新, 刷新各页
-        self._pump_feature_jobs()
-
-    def _on_feature_job_failed(self, msg):
-        self._feat_worker = None
-        if self._dashboard is not None:
-            self._dashboard._append_log("特征重算失败: %s" % msg,
-                                        color="#ff6b6b")
-        self._pump_feature_jobs()
+        text = text.strip()
+        if not text or text == "0":
+            return
+        fid = dict(items).get(text)
+        if fid is None:
+            m = re.match(r"^(Fin\d+)$", text)
+            fid = m.group(1) if m else None
+        if fid == "new":
+            self.ds.split_to_new_fin_id([full])
+        elif fid is not None:
+            self.ds.move_selected_to_fin_id([full], fid)
+        else:
+            QMessageBox.warning(self, "Add Fin", "Invalid FinID: %s" % text)
 
     def _refresh_fin_boxes_on_tabs(self, path):
         """更新所有依赖 fin_boxes 的 tab 上的框。"""
