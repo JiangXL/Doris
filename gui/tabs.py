@@ -929,7 +929,7 @@ class GroupedTab(QWidget):
         self.rep_grid = ImageGrid()
         self.rep_grid.setDragEnabled(False)      # 只做拖放目标
         self.rep_grid.set_accept_drops(True)
-        self.rep_grid.paths_dropped.connect(self._on_rep_drop)
+        self.rep_grid.paths_dropped_on.connect(self._on_rep_drop)
         self._bottom_stack.addWidget(self._titled(
             "各 FinID 代表鳍 — 把上方未分类鳍拖到代表图上, 整 track 并入该 FinID",
             self.rep_grid))
