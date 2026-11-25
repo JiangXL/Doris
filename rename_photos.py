@@ -134,7 +134,8 @@ class PhotoRenamer:
             self.scan(start_index=start_index, sort_by=sort_by,
                       progress_callback=progress_callback)
         if dry_run:
-            return self.preview()
+            return [(os.path.basename(o), os.path.basename(n))
+                    for o, n in self.mapping]
         total = len(self.mapping)
         moved = []
         for i, (old_path, new_path) in enumerate(self.mapping, 1):
@@ -540,11 +541,14 @@ def run_cli():
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     root = args[0] if args else "."
     start_index = 1
+    print("args:", args)
     if len(args) == 2:
+        print(args[1])
         start_index = int(args[1]) 
+        print(start_index)
     dry = "--dry-run" in sys.argv
     renamer = PhotoRenamer(root)
-    mapping = renamer.scan().rename(start_index= start_index, dry_run=dry)
+    mapping = renamer.scan(start_index=start_index).rename(dry_run=dry)
     for old_name, new_name in mapping:
         print("%s -> %s" % (old_name, new_name))
 
