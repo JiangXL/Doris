@@ -25,6 +25,7 @@ from doris_dataset import Dataset, ASPECT_LABELS
 from .common import (
     ImageGrid, ThumbLoader, MIME_PATHS, THUMB_SIZE,
     ZoomableView, open_orig_viewer, open_image_viewer,
+    make_top_bar, add_status_label,
 )
 
 from .steps import (
@@ -574,85 +575,75 @@ class GroupedTab(QWidget):
         self.splitter.setSizes([160, 1000])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        if self._best_mark is not None or self._overview_provider is not None \
-                or self._clear_mark is not None \
-                or self._shot_type_setter is not None \
-                or self._shot_info_provider is not None \
-                or (track_move_checkbox and self._track_mover is not None):
-            bar = QWidget()
-            bar.setFixedHeight(26)  # 顶栏限高, 默认会被按钮撑得很高
-            top = QHBoxLayout(bar)
-            top.setContentsMargins(4, 0, 4, 0)
-            # 模式选择: 单个 "Mode" 图标按钮 + 弹出菜单 (Review 默认 / Match / Overview)
-            # 仅当有其它模式可选时才出现 (Dolphin 审阅页只有 Review, Mode 按钮
-            # 由 Dolphin 页顶栏提供, 这里不再重复)
-            if self._best_mark is not None or self._overview_provider is not None:
-                modes = [("review", "Review Mode",
-                          "浏览模式: 侧边分组列表 + 当前组全部鳍图")]
-                if self._best_mark is not None:
-                    modes.append(("match", "Match Mode",
-                                  "匹配模式: 只显示每 shot 最佳鳍图 (BestInShot), "
-                                  "网格分三栏: 当前组 / 相似个体 / 排除区"))
-                if self._overview_provider is not None:
-                    modes.append(("overview", "Overview Mode",
-                                  "总览模式: 每个个体一张最清晰的代表鳍图"))
-                self._mode_actions = {}
-                menu = QMenu(self)
-                for key, text, tip in modes:
-                    act = menu.addAction(text)
-                    act.setCheckable(True)
-                    act.setToolTip(tip)
-                    act.triggered.connect(
-                        lambda _=False, k=key: self._set_mode(k))
-                    self._mode_actions[key] = act
-                self._mode_actions["review"].setChecked(True)
-                self.mode_btn = QToolButton()
-                self.mode_btn.setText("Mode: Review Mode")
-                self.mode_btn.setIcon(self._mode_icon())
-                self.mode_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-                self.mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-                self.mode_btn.setToolTip("选择浏览模式")
-                self.mode_btn.setMenu(menu)
-                top.addWidget(self.mode_btn)
-                self.count_label = QLabel()
-                top.addWidget(self.count_label)
-            self._clear_cb = None
-            if self._clear_mark is not None:
-                self._clear_cb = QCheckBox("Clear")
-                self._clear_cb.setToolTip("勾选后 Review 模式只显示 "
-                                          "Clear==1 的清晰鳍图")
-                self._clear_cb.toggled.connect(self._on_clear_toggled)
-                top.addWidget(self._clear_cb)
-            if self._renamer is not None:
-                self._rename_btn = QPushButton("Rename ID")
-                self._rename_btn.setToolTip(
-                    "把所有 FinID 重新编号为 Fin001..FinNNN (N=当前 FinID 总数)")
-                self._rename_btn.clicked.connect(self._rename_fin_ids)
-                top.addWidget(self._rename_btn)
-            if track_move_checkbox and self._track_mover is not None:
-                self._track_move_cb = QCheckBox("Operate whole Track")
-                self._track_move_cb.setToolTip(
-                    "勾选后右键/拖放操作 (移动 / Split to New FinID / "
-                    "Remove FinID) 会同时作用于同 ShotID+TrackIDInShot 的鳍图")
-                self._track_move_cb.setChecked(True)
-                top.addWidget(self._track_move_cb)
-            self._shot_type_cb = None
-            self._shot_info_label = None
-            if self._shot_type_setter is not None \
-                    or self._shot_info_provider is not None:
-                if self._shot_type_setter is not None:
-                    top.addWidget(QLabel("ShotType:"))
-                    self._shot_type_cb = QComboBox()
-                    self._shot_type_cb.addItems(
-                        ["NOTE", "SEABIRD", "MISC", ""])
-                    self._shot_type_cb.setMinimumWidth(90)
-                    self._shot_type_cb.currentTextChanged.connect(
-                        self._on_shot_type_changed)
-                    top.addWidget(self._shot_type_cb)
-                if self._shot_info_provider is not None:
-                    self._shot_info_label = QLabel()
-                    self._shot_info_label.setStyleSheet("color: #666666;")
-                    top.addWidget(self._shot_info_label)
+        bar, top = make_top_bar()
+        # 模式选择: 单个 "Mode" 图标按钮 + 弹出菜单 (Review 默认 / Match / Overview)
+        # 仅当有其它模式可选时才出现 (Dolphin 审阅页只有 Review, Mode 按钮
+        # 由 Dolphin 页顶栏提供, 这里不再重复)
+        if self._best_mark is not None or self._overview_provider is not None:
+            modes = [("review", "Review Mode",
+                      "浏览模式: 侧边分组列表 + 当前组全部鳍图")]
+            if self._best_mark is not None:
+                modes.append(("match", "Match Mode",
+                              "匹配模式: 只显示每 shot 最佳鳍图 (BestInShot), "
+                              "网格分三栏: 当前组 / 相似个体 / 排除区"))
+            if self._overview_provider is not None:
+                modes.append(("overview", "Overview Mode",
+                              "总览模式: 每个个体一张最清晰的代表鳍图"))
+            self._mode_actions = {}
+            menu = QMenu(self)
+            for key, text, tip in modes:
+                act = menu.addAction(text)
+                act.setCheckable(True)
+                act.setToolTip(tip)
+                act.triggered.connect(
+                    lambda _=False, k=key: self._set_mode(k))
+                self._mode_actions[key] = act
+            self._mode_actions["review"].setChecked(True)
+            self.mode_btn = QToolButton()
+            self.mode_btn.setText("Mode: Review Mode")
+            self.mode_btn.setIcon(self._mode_icon())
+            self.mode_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            self.mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            self.mode_btn.setToolTip("选择浏览模式")
+            self.mode_btn.setMenu(menu)
+            top.addWidget(self.mode_btn)
+            self.count_label = add_status_label(top)
+        self._clear_cb = None
+        if self._clear_mark is not None:
+            self._clear_cb = QCheckBox("Clear")
+            self._clear_cb.setToolTip("勾选后 Review 模式只显示 "
+                                      "Clear==1 的清晰鳍图")
+            self._clear_cb.toggled.connect(self._on_clear_toggled)
+            top.addWidget(self._clear_cb)
+        if self._renamer is not None:
+            self._rename_btn = QPushButton("Rename ID")
+            self._rename_btn.setToolTip(
+                "把所有 FinID 重新编号为 Fin001..FinNNN (N=当前 FinID 总数)")
+            self._rename_btn.clicked.connect(self._rename_fin_ids)
+            top.addWidget(self._rename_btn)
+        if track_move_checkbox and self._track_mover is not None:
+            self._track_move_cb = QCheckBox("Operate whole Track")
+            self._track_move_cb.setToolTip(
+                "勾选后右键/拖放操作 (移动 / Split to New FinID / "
+                "Remove FinID) 会同时作用于同 ShotID+TrackIDInShot 的鳍图")
+            self._track_move_cb.setChecked(True)
+            top.addWidget(self._track_move_cb)
+        self._shot_type_cb = None
+        self._shot_info_label = None
+        if self._shot_type_setter is not None \
+                or self._shot_info_provider is not None:
+            if self._shot_type_setter is not None:
+                top.addWidget(QLabel("ShotType:"))
+                self._shot_type_cb = QComboBox()
+                self._shot_type_cb.addItems(
+                    ["NOTE", "SEABIRD", "MISC", ""])
+                self._shot_type_cb.setMinimumWidth(90)
+                self._shot_type_cb.currentTextChanged.connect(
+                    self._on_shot_type_changed)
+                top.addWidget(self._shot_type_cb)
+            if self._shot_info_provider is not None:
+                self._shot_info_label = add_status_label(top)
+        if top.count():  # 没有任何控件时不加空顶栏
             top.addStretch(1)
             lay.addWidget(bar)
         lay.addWidget(self.splitter)
@@ -1427,10 +1418,7 @@ class StatisticsTab(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         # 顶部保存按钮
-        bar = QWidget()
-        bar.setFixedHeight(26)
-        top = QHBoxLayout(bar)
-        top.setContentsMargins(4, 0, 4, 0)
+        bar, top = make_top_bar()
         self._save_statistics_btn = QPushButton("Save Statistics")
         self._save_statistics_btn.setToolTip("将整个统计页保存为一张图")
         self._save_statistics_btn.clicked.connect(self._save_statistics)

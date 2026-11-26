@@ -17,7 +17,7 @@ from PyQt6.QtGui import QIcon, QImage
 from doris_dataset import Dataset
 from .tabs import DashboardTab, GroupedTab, StatisticsTab
 from .dolphin import DolphinTab, MatchPanel, CandidateList
-from .common import ImageGrid
+from .common import ImageGrid, make_top_bar, add_status_label
 from resource_paths import resource_path
 
 DORIS_VERSION = "0.2.5"
@@ -231,7 +231,8 @@ class MainWindow(QMainWindow):
         tab9 = QWidget()
         lay = QVBoxLayout(tab9)
         lay.setContentsMargins(0, 0, 0, 0)
-        top = QHBoxLayout()
+        bar9, top = make_top_bar()
+        lay.addWidget(bar9)
         self._dolphin_mode_actions = {}
         menu = QMenu(self)
         for key, text, tip in [
@@ -266,8 +267,8 @@ class MainWindow(QMainWindow):
         self._btn_reorder_rel.clicked.connect(
             self._reorder_dolphins_by_relationship)
         top.addWidget(self._btn_reorder_rel)
+        self._dolphin_count_label = add_status_label(top)
         top.addStretch(1)
-        lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
         viewers = dict(fin_lister=ds.dolphin_fins,
                        fin_labels=ds.dolphin_fin_labels(),
@@ -275,11 +276,13 @@ class MainWindow(QMainWindow):
                        photo_boxes=shot_boxes,
                        photo_labels=photo_labels)
         self._dolphin_tab = DolphinTab(**viewers)
-        self._dolphin_tab.show_dolphins(ds.dolphins(),
-                                        social=ds.dolphin_social_map())
         self._dolphin_tab.dr_swapped.connect(self._swap_dolphin_dr)
         self._dolphin_tab.dr_dropped_on_empty.connect(
             self._create_dolphin_from_dr)
+        self._dolphin_tab.count_changed.connect(
+            lambda n: self._dolphin_count_label.setText("海豚总数: %d" % n))
+        self._dolphin_tab.show_dolphins(ds.dolphins(),
+                                        social=ds.dolphin_social_map())
         self._match_panel = MatchPanel(ds.dolphin_candidates, **viewers)
         self._match_panel.assign_requested.connect(self._match_assign)
         self._match_panel.unmatch_requested.connect(self._match_unmatch)

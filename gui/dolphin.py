@@ -67,6 +67,7 @@ class DolphinTab(QListWidget):
 
     dr_swapped = pyqtSignal(str, str)  # (源 Dph 名, 目标 Dph 名)
     dr_dropped_on_empty = pyqtSignal(str)  # 源 Dph 名
+    count_changed = pyqtSignal(int)      # 海豚总数 (顶栏状态标签用)
     DR_MIME = "application/x-doris-dolphin-dr"
     DOLPHIN_MIME = "application/x-doris-dolphin-cell"
 
@@ -115,6 +116,7 @@ class DolphinTab(QListWidget):
         self._dolphin_order = [d[0] for d in dolphins]
         self._dolphin_data = {d[0]: d for d in dolphins}
         self._social = social or {}
+        self.count_changed.emit(len(dolphins))
         self._stop_loaders()
         self.clear()
         self._items = {}

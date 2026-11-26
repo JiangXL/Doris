@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QMessageBox, QGraphicsView, QGraphicsScene,
     QStyledItemDelegate, QStyle, QStyleOptionViewItem,
     QHBoxLayout, QPushButton, QMenu, QGraphicsRectItem,
-    QGraphicsTextItem, QGraphicsItem, QInputDialog,
+    QGraphicsTextItem, QGraphicsItem, QInputDialog, QWidget,
 )
 from PyQt6.QtGui import (
     QPixmap, QIcon, QImage, QImageReader, QImageIOHandler, QPainter,
@@ -114,6 +114,25 @@ def _paint_label(p, target, text):
     p.fillRect(rect, QColor(0, 0, 0, 140))
     p.setPen(Qt.GlobalColor.white)
     p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+
+def make_top_bar():
+    """统一的数据页顶栏: 固定 26px 高, 左右 4px 边距, 控件从左到右,
+    末尾自行 addStretch(1)。返回 (bar_widget, hbox)。"""
+    bar = QWidget()
+    bar.setFixedHeight(26)  # 顶栏限高, 默认会被按钮撑得很高
+    top = QHBoxLayout(bar)
+    top.setContentsMargins(4, 0, 4, 0)
+    return bar, top
+
+
+def add_status_label(top):
+    """顶栏灰色状态文字标签 (FinID 总数 / 海豚总数 / shot 信息等)。"""
+    lbl = QLabel()
+    lbl.setStyleSheet("color: #666666;")
+    top.addWidget(lbl)
+    return lbl
+
 # ---------------------------------------------------------------------------
 # 缩略图后台加载 (多线程分片 + 磁盘缓存)
 # ---------------------------------------------------------------------------
