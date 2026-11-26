@@ -75,12 +75,31 @@ def export_dolphin_pptx(dolphins, out_path, social=None, cols=GRID_COLS):
         p.alignment = PP_ALIGN.CENTER
         p.runs[0].font.size = Pt(min(24, max(9, ch * 7)))
         p.runs[0].font.bold = True
+        # FinID: 各自鳍图左下角 (DL 在接缝处, DR 在格子底部)
+        _add_finid_label(slide, x, y + half - 0.22, dl_fid)
+        _add_finid_label(slide, x, y + ch - 0.22, dr_fid)
         # SocialStructure 标签: 左上角, 每个组用自己的颜色
         label = social.get(str(name), "")
         if label:
             _add_social_label(slide, x, y, label, cw)
     prs.save(out_path)
     return n
+
+
+def _add_finid_label(slide, x, y, fid):
+    """在鳍图左下角叠加 FinID (白色小字)。"""
+    if fid in (None, ""):
+        return
+    tb = slide.shapes.add_textbox(Inches(x + 0.03), Inches(y),
+                                  Inches(1.5), Inches(0.2))
+    tf = tb.text_frame
+    tf.word_wrap = False
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+    p.text = str(fid)
+    p.runs[0].font.size = Pt(8)
+    p.runs[0].font.bold = True
+    p.runs[0].font.color.rgb = RGBColor(255, 255, 255)
 
 
 def _add_social_label(slide, x, y, label, cw):

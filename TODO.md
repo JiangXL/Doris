@@ -51,11 +51,12 @@
 2. 修复 ShotType, PhotoType 的导入类型错误，或者类型检查
 3. 设计 Fin0 的候选捕捞框 [x]
 4. 新建背鳍后，直接赋予FinID? 不提取 deepfeature. 直接修改或指定背鳍的 ID?[x]
-5. 统一全屏窗口的标签样式。
+5. 统一全屏窗口的标签样式。[x]
 6. 同一背鳍缩略图标签样式。
 7. 更换 Dolphin Tab 的Match Mode 里的 connection matrix 为 similarity matrix
-8. 导出含 FinID 的 ppt
+8. 导出含 FinID 的 pptx[x]
 
 11/24
 1. rename connection matrix to incidence matrix
 2. move the border label away from fin image
+3. the filter of FinID display at FinID tab?
