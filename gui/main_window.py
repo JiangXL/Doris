@@ -202,10 +202,9 @@ class MainWindow(QMainWindow):
                 dolphin_assigner=self._assign_dolphin_to_fin_id
                 if title == "Fin ID" else None)
             groups = fn()
-            if title == "Fin ID":  # 只显示图片数大于 0 的个体; "0" 未分类组始终保留
+            if title == "Fin ID":  # 显示全部有鳍图的个体 (含只有 1 张的); "0" 未分类组始终保留
                 groups = {k: v for k, v in groups.items() if len(v) > 0}
-                if groups:
-                    groups.setdefault("0", [])
+                groups.setdefault("0", [])
             if groups:
                 boxes = shot_boxes if title == "Continuous Shots" else None
                 tab.set_groups(groups, boxes=boxes)
@@ -661,8 +660,8 @@ class MainWindow(QMainWindow):
         ds = self.ds
         fin_tabs = {"Fin Aspect", "Fin Quality", "Fin ID"}
         groups = fn()
-        if title == "Fin ID":  # 只显示图片数大于 1 的个体; "0" 未分类组始终保留
-            groups = {k: v for k, v in groups.items() if len(v) > 1 or k == "0"}
+        if title == "Fin ID":  # 显示全部有鳍图的个体 (含只有 1 张的); "0" 未分类组始终保留
+            groups = {k: v for k, v in groups.items() if len(v) > 0}
             groups.setdefault("0", [])
             tab._best_mark = ds.fin_best_marks().__contains__
             tab._clear_mark = ds.fin_clear_marks().__contains__
