@@ -1209,7 +1209,8 @@ class Dataset:
         unmatched_dr = [f for f in sub[sub["Aspect"] == "DR"]["FinID"].unique()
                         if dph_of(f, "DR") is None]
         mismatch = self._mismatch_pairs()  # 用户确认过的不匹配对, 不再自动重配
-        sim = self._ensure_matrices()
+        self._ensure_matrices()
+        sim = self.similarity_matrix 
         used_dr = set()
         if sim is not None and unmatched_dr:
             fids = df["FinID"].to_numpy()
@@ -1481,7 +1482,7 @@ class Dataset:
         labels = 'FinIDx sim=0.83' (path 为键), 按代表鳍间相似度降序。
         候选图已是 fin 裁剪, 不叠加鳍框。"""
         df = self.fin_df
-        sim = self._ensure_matrices()
+        sim = self.similarity_matrix 
         if df.empty or sim is None or "FinID" not in df.columns \
                 or "Aspect" not in df.columns:
             return [], [], {}

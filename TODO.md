@@ -53,7 +53,7 @@
 4. 新建背鳍后，直接赋予FinID? 不提取 deepfeature. 直接修改或指定背鳍的 ID?[x]
 5. 统一全屏窗口的标签样式。[x]
 6. 同一背鳍缩略图标签样式。
-7. 更换 Dolphin Tab 的Match Mode 里的 connection matrix 为 similarity matrix
+7. 更换 Dolphin Tab 的Match Mode 里的 connection matrix 为 similarity matrix[x]
 8. 导出含 FinID 的 pptx[x]
 
 11/24
