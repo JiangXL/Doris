@@ -1288,6 +1288,23 @@ class Dataset:
         self._cache[key] = groups
         return groups
 
+    def dolphin_fins(self, name, cls):
+        """DolphinID + Aspect (DL/DR) -> 有序鳍图 fullpath 列表 (大图查看器
+        浏览用); 无记录返回 []。"""
+        key = ("dolphin_fins", name, cls)
+        if key in self._cache:
+            return self._cache[key]
+        df = self.fin_df
+        out = []
+        if not df.empty and "DolphinID" in df.columns \
+                and "Aspect" in df.columns and "fullpath" in df.columns:
+            sub = df[(df["DolphinID"].astype(str) == str(name))
+                     & (df["Aspect"].astype(str) == str(cls))]
+            sub = sub.dropna(subset=["fullpath"]).sort_values(by="Path")
+            out = [p for p in sub["fullpath"] if isinstance(p, str)]
+        self._cache[key] = out
+        return out
+
     def dolphin_fin_labels(self):
         """鳍图路径 -> 'DL F1' / 'DR F5' 标注 (Dolphin Review Mode 用)。"""
         key = "dolphin_fin_labels"
@@ -1857,96 +1874,6 @@ class Dataset:
             self.fin_df.loc[list(track_of.keys()), "TrackIDInShot"] = \
                 [track_of[k] for k in track_of.keys()]
             self._save_csv(self.fin_df, "FIN_METAINFO.csv")
-
-    def extract_feature(self, crop_path):
-        """对单个裁剪鳍图提取深度特征向量 (numpy 1-D array)。"""
-        if not os.path.isfile(crop_path):
-            return None
-        if not hasattr(self, "_feat_lock"):
-            self._feat_lock = threading.Lock()
-        with self._feat_lock:  # 首次加载 ONNX 模型较慢, 防止并发初始化
-            if getattr(self, "_deep_feat_extractor", None) is None:
-                from Step3_extract_fin_feature import FinDeepFeatureExtractor
-                self._deep_feat_extractor = \
-                    FinDeepFeatureExtractor().feature_extractor
-        extractor = self._deep_feat_extractor
-        feat = extractor.extract([crop_path], batch_size=1)
-        return feat[0] if feat is not None and len(feat) else None
-
-    def replace_feature_for_box(self, path, box):
-        """鳍框被编辑后, 重算该鳍的深度特征并更新相似度矩阵 (供后台任务调用)。
-        优先按 box[6] (identity) 定位行, 否则按 PhotoName+坐标。"""
-        if self.fin_df.empty or "PhotoName" not in self.fin_df.columns:
-            return
-        idx = self._find_fin_row(path, box)
-        if idx is None:
-            return
-        full = self.fin_df.at[idx, "fullpath"] \
-            if "fullpath" in self.fin_df.columns \
-            else os.path.join(self.root, str(self.fin_df.at[idx, "Path"]))
-        feat = self.extract_feature(full)
-        if feat is None:
-            return
-        self._replace_similarity_row(idx, np.asarray(feat).reshape(1, -1))
-
-    def _replace_similarity_row(self, idx, f_new):
-        """替换第 idx 个鳍的特征向量, 重算相似度/关联矩阵的第 idx 行/列
-        (就地更新常驻成员 similarity_matrix / connection_matrix 并持久化)。"""
-        feat_file = os.path.join(self.meta_dir, "FIN_DEEPFEATURES.npy")
-        sim_file = os.path.join(self.meta_dir, "FIN_SIMILARITY.npy")
-        conn_file = os.path.join(self.meta_dir, "FIN_CONNECTION.npy")
-        if not os.path.isfile(feat_file):
-            return
-        if not hasattr(self, "_feat_lock"):
-            self._feat_lock = threading.Lock()
-        with self._feat_lock:
-            if self._ensure_matrices() is None \
-                    or self.similarity_matrix is None:
-                return
-            features = np.load(feat_file)
-            sim = self.similarity_matrix
-            conn = self.connection_matrix
-            N = len(features)
-            if not (0 <= idx < N) or sim.shape != (N, N):
-                return
-            norms = np.linalg.norm(features, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            norm_new = float(np.linalg.norm(f_new))
-            if norm_new == 0:
-                norm_new = 1.0
-            cross = np.dot(f_new / norm_new,
-                           (features / norms).T).reshape(-1)
-            features[idx] = f_new
-            sim[idx, :] = cross
-            sim[:, idx] = cross
-            sim[idx, idx] = 1.0
-            conn[idx, :] = cross
-            conn[:, idx] = cross
-            conn[idx, idx] = 1.0
-            # same-photo 置 0 (编辑后的鳍与同一原图的其它鳍)
-            name = str(self.fin_df["PhotoName"].iloc[idx])
-            same = np.flatnonzero(
-                self.fin_df["PhotoName"].to_numpy() == name)
-            same = same[same != idx]
-            if len(same):
-                sim[idx, same] = 0.0
-                sim[same, idx] = 0.0
-            # CONNECTION: same-track 置 1
-            if "TrackIDInShot" in self.fin_df.columns:
-                track = self.fin_df["TrackIDInShot"].iloc[idx]
-                shot = str(self.fin_df["ShotID"].iloc[idx])
-                if not pd.isna(track):
-                    mask = ((self.fin_df["ShotID"].astype(str) == shot)
-                            & (self.fin_df["TrackIDInShot"] == track)
-                            ).to_numpy().copy()  # CoW 下 to_numpy 可能只读
-                    mask[idx] = False
-                    tidx = np.flatnonzero(mask)
-                    conn[idx, tidx] = 1.0
-                    conn[tidx, idx] = 1.0
-            np.save(feat_file, features)
-            np.save(sim_file, sim)
-            np.save(conn_file, conn)
-        self._invalidate_cache()
 
     def _expand_similarity_for_new_fin(self, new_feature):
         """新增一个鳍后, 同步扩展 FIN_DEEPFEATURES / FIN_SIMILARITY / FIN_CONNECTION。

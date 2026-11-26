@@ -426,9 +426,8 @@ class ImageGrid(QListWidget):
         self._cache_dir = None
         self._full_open_exclude = None
         self._full_open_best = None
-        self._full_open_move = None
+        self._full_open_misc = None
         self._box_editor = None
-        self._allow_add_fin = True  # 大图查看器是否提供 Add Fin (fin 裁剪图网格关)
         self._best_in_fin = set()
         # 懒加载: 滚动/缩放后延迟 120ms 只加载可视区域的缩略图
         self._lazy_timer = QTimer(self)
@@ -454,11 +453,12 @@ class ImageGrid(QListWidget):
         """允许/禁止在同网格内拖放到另一张图上 (Overview 模式合并用)。"""
         self._accept_self_drops = on
 
-    def set_full_open_callbacks(self, exclude=None, best=None, move=None):
-        """设置大图查看窗口的排除/标记最佳/Alt+N 移组回调。"""
+    def set_full_open_callbacks(self, exclude=None, best=None, misc=None):
+        """设置大图查看窗口回调: 鳍裁剪图网格用 exclude/best,
+        原图网格用 misc (MISC 标记)。"""
         self._full_open_exclude = exclude
         self._full_open_best = best
-        self._full_open_move = move
+        self._full_open_misc = misc
 
     def set_box_editor(self, box_editor):
         """设置全图查看窗口的鳍框编辑回调。"""
@@ -698,14 +698,20 @@ class ImageGrid(QListWidget):
 
     def _open_full(self, item):
         paths = [self.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.count())]
-        dlg = ImageViewerDialog(paths, self.row(item), self, boxes=self._boxes,
-                                labels=self._labels,
-                                on_exclude=self._full_open_exclude,
-                                on_best=self._full_open_best,
-                                on_move=self._full_open_move,
-                                box_editor=self._box_editor,
-                                allow_add_fin=self._allow_add_fin)
-        open_image_viewer(dlg)
+        index = self.row(item)
+        if paths and ThumbLoader._is_fin_image(paths[index]):
+            # 鳍裁剪图: 标签 + 排除/标记最佳
+            open_image_viewer(open_fin_viewer(
+                paths, index, self, labels=self._labels,
+                on_exclude=self._full_open_exclude,
+                on_best=self._full_open_best))
+        else:
+            # 原始照片: 鳍框/标签 + 框编辑/添加鳍/MISC
+            open_image_viewer(open_orig_viewer(
+                paths, index, self, boxes=self._boxes,
+                labels=self._labels,
+                box_editor=self._box_editor,
+                on_misc=self._full_open_misc))
 class _HandleItem(QGraphicsRectItem):
     """ResizableBoxItem 的 8 个拖拽把手 (角 + 边中点)。"""
 
@@ -942,18 +948,39 @@ def open_image_viewer(dlg):
     _OPEN_VIEWERS.add(dlg)
     dlg.finished.connect(dlg.deleteLater)
     dlg.finished.connect(lambda: _OPEN_VIEWERS.discard(dlg))
+    # 父控件销毁等路径不会发 finished, destroyed 兜底清出集合,
+    # 避免集合里留存 C++ 对象已删除的僵尸 wrapper
+    dlg.destroyed.connect(lambda: _OPEN_VIEWERS.discard(dlg))
     dlg.show()
+
+
+def open_fin_viewer(paths, index, parent=None, labels=None,
+                    on_exclude=None, on_best=None):
+    """鳍裁剪图查看器 (固定行为): 组内翻页 + 标签叠加, 回调仅排除/标记最佳。"""
+    return ImageViewerDialog(paths, index, parent, labels=labels,
+                             on_exclude=on_exclude, on_best=on_best,
+                             allow_add_fin=False)
+
+
+def open_orig_viewer(paths, index, parent=None, boxes=None, labels=None,
+                     box_editor=None, on_misc=None):
+    """原图查看器 (固定行为): 组内翻页 + 鳍框叠加,
+    回调为框编辑/添加鳍 (A)/MISC 标记。
+    不叠加 shot id 文字 (已在窗口标题); 鳍框上的 FinID 标注保留。"""
+    return ImageViewerDialog(paths, index, parent, boxes=boxes, labels=labels,
+                             box_editor=box_editor, on_misc=on_misc,
+                             allow_add_fin=True, show_label=False)
 
 
 class ImageViewerDialog(QDialog):
     """大图查看窗口。←/→ 切换组内上一张/下一张, =/- 放大/缩小, Ctrl+W 关闭。
-    可选 on_exclude / on_best / on_misc 回调, 在大图窗口中按 Delete / B / M
-    或右键排除/标记最佳/标记 PhotoType 为 MISC。
-    传入 box_editor 后, 右键可进入鳍框编辑模式 (移动/缩放框并保存)。"""
+    两种固定形态见 open_fin_viewer / open_orig_viewer:
+    鳍裁剪图 = 标签叠加 + Delete/B 排除/标记最佳;
+    原图 = 鳍框/标签叠加 + 右键框编辑, A 添加鳍, M 标记 MISC。"""
 
     def __init__(self, paths, index, parent=None, boxes=None, labels=None,
-                 on_exclude=None, on_best=None, on_misc=None, on_move=None,
-                 box_editor=None, allow_add_fin=True):
+                 on_exclude=None, on_best=None, on_misc=None,
+                 box_editor=None, allow_add_fin=True, show_label=True):
         super().__init__(parent)
         # 独立顶层窗口: 不带此 flag 时父化的 QDialog 会被窗口管理器当作
         # 主窗口的瞬态窗口, 永远压在 Doris 主窗口之上
@@ -962,10 +989,10 @@ class ImageViewerDialog(QDialog):
         self._index = index
         self._boxes = boxes or {}
         self._labels = labels or {}
+        self._show_label = show_label  # 原图查看器关: shot id 已在标题栏
         self._on_exclude = on_exclude
         self._on_best = on_best
         self._on_misc = on_misc
-        self._on_move = on_move
         self._box_editor = box_editor
         self._allow_add_fin = allow_add_fin
         self._edit_mode = False
@@ -992,10 +1019,17 @@ class ImageViewerDialog(QDialog):
         size = event.size()
         _LAST_VIEWER_SIZE = size
         # 与其它仍打开的大图窗口保持尺寸一致 (resize 只在尺寸不同时
-        # 再触发 resizeEvent, 一轮传播后全部相等, 不会往复)
-        for w in _OPEN_VIEWERS:
-            if w is not self and w.size() != size:
-                w.resize(size)
+        # 再触发 resizeEvent, 一轮传播后全部相等, 不会往复)。
+        # 集合里可能留存 C++ 已删除的 wrapper (finished 未发的销毁路径),
+        # 访问前兜底清理, 不崩溃
+        for w in list(_OPEN_VIEWERS):
+            if w is self:
+                continue
+            try:
+                if w.size() != size:
+                    w.resize(size)
+            except RuntimeError:
+                _OPEN_VIEWERS.discard(w)
         super().resizeEvent(event)
 
     def _show(self, index):
@@ -1025,8 +1059,7 @@ class ImageViewerDialog(QDialog):
             self.view.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _refresh_overlay(self):
-        """按当前图片重建鳍框/标签覆盖层 (干净 pixmap 之上的纯装饰项)。
-        标签只叠加给鳍图; 原图的 shot id 已显示在窗口标题上。"""
+        """按当前图片重建鳍框/标签覆盖层 (干净 pixmap 之上的纯装饰项)。"""
         if self._overlay_item is not None:
             self._scene.removeItem(self._overlay_item)
             self._overlay_item = None
@@ -1035,7 +1068,7 @@ class ImageViewerDialog(QDialog):
         if pm is None or pm.isNull():
             return
         label = None
-        if ThumbLoader._is_fin_image(path):
+        if self._show_label:
             label = self._labels.get(path) or self._labels.get(
                 os.path.basename(path))
         overlay = BoxesOverlayItem(self._boxes.get(path), label,
@@ -1228,14 +1261,6 @@ class ImageViewerDialog(QDialog):
         elif event.key() == Qt.Key.Key_M and self._on_misc is not None:
             self._on_misc([self._paths[self._index]])
             event.accept()
-        elif event.modifiers() & Qt.KeyboardModifier.AltModifier and self._on_move is not None:
-            # Alt+1..9: 移入第 N 个分组
-            key = event.key()
-            if Qt.Key.Key_1 <= key <= Qt.Key.Key_9:
-                self._on_move(self._paths[self._index], key - Qt.Key.Key_1)
-                event.accept()
-                return
-            super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
 

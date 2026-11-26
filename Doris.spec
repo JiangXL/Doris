@@ -41,6 +41,7 @@ a = Analysis(
         ('models/fin_aspect_classification_resnet101_final.onnx', 'models'),
         ('models/megadescriptor_dolphin_ft.onnx', 'models'),
         ('Delphinus_IAU.png', '.'),
+        ('Delphinus_IAU_icon.png', '.'),
     ],
     hiddenimports=[
         'Step1a_scan_photo_exif',

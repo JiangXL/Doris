@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData, QPoint, QRec
 from doris_dataset import Dataset, ASPECT_LABELS
 from .common import (
     ImageGrid, ThumbLoader, MIME_PATHS, THUMB_SIZE,
-    ZoomableView, ImageViewerDialog, open_image_viewer,
+    ZoomableView, open_orig_viewer, open_image_viewer,
 )
 
 from .steps import (
@@ -568,8 +568,6 @@ class GroupedTab(QWidget):
         self.group_list.setTextElideMode(Qt.TextElideMode.ElideNone)  # 不省略
         self.grid = ImageGrid()
         self.grid.set_box_editor(box_editor)
-        # 鳍图页 (有 full_resolver) 显示的是 fin 裁剪图: 大图查看器不提供 Add Fin
-        self.grid._allow_add_fin = full_resolver is None
         self.splitter.addWidget(self.group_list)
         self.splitter.addWidget(self.grid)
         self.splitter.setStretchFactor(1, 1)
@@ -692,15 +690,16 @@ class GroupedTab(QWidget):
             # Delete 键: 把上方当前组选中的鳍图移入排除区
             self.grid.exclude_requested.connect(self._exclude_selected)
         if self._best_marker is not None or self._exclude is not None \
-                or self._alt_move:
-            # 大图查看窗口的右键/快捷键同样支持排除/标记最佳/Alt+N 移组
+                or self._photo_type_setter is not None:
+            # 大图查看窗口回调: 鳍裁剪图网格 = 排除/标记最佳,
+            # 原图网格 (Continuous Shots 等) = MISC 标记
             self.grid.set_full_open_callbacks(
                 exclude=self._full_open_exclude_cb
                 if self._exclude is not None else None,
                 best=self._full_open_best_cb
                 if self._best_marker is not None else None,
-                move=self._full_open_move
-                if self._alt_move else None)
+                misc=self._full_open_misc_cb
+                if self._photo_type_setter is not None else None)
 
     def _move_to_group_index(self, idx):
         """Alt+N: 把网格中选中的图片移入侧边第 N 组 (与拖放同一条路径)。"""
@@ -713,12 +712,11 @@ class GroupedTab(QWidget):
         paths = [it.data(Qt.ItemDataRole.UserRole) for it in items]
         self._on_drop(paths, target)
 
-    def _full_open_move(self, path, idx):
-        """大图查看窗口中 Alt+N: 把当前图片移入侧边第 N 组。"""
-        if idx >= self.group_list.count():
+    def _full_open_misc_cb(self, paths):
+        """大图查看窗口 (原图) 的 MISC 回调: 把当前原图标记为 MISC。"""
+        if not paths or self._photo_type_setter is None:
             return
-        target = self.group_list.item(idx).data(Qt.ItemDataRole.UserRole)
-        self._on_drop([path], target)
+        self._photo_type_setter(paths, "MISC")
 
     def _on_middle(self, path):
         """中键鳍图: 弹窗查看对应原始全图, 可翻页浏览当前组内其它原图。"""
@@ -779,13 +777,13 @@ class GroupedTab(QWidget):
                 return
             self._photo_type_setter(orig_paths, "MISC")
 
-        dlg = ImageViewerDialog(origs, origs.index(orig), self,
-                                boxes=self._full_boxes,
-                                labels=self._orig_labels,
-                                box_editor=_edit_for_middle,
-                                on_misc=_misc_for_middle
-                                if self._photo_type_setter is not None
-                                else None)
+        dlg = open_orig_viewer(origs, origs.index(orig), self,
+                               boxes=self._full_boxes,
+                               labels=self._orig_labels,
+                               box_editor=_edit_for_middle,
+                               on_misc=_misc_for_middle
+                               if self._photo_type_setter is not None
+                               else None)
         open_image_viewer(dlg)
 
     def set_groups(self, groups, tooltips=None, keep_current=False, boxes=None):

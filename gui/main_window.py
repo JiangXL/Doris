@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Doris v%s — %s" % (DORIS_VERSION, root) if root
                             else "Doris v%s" % DORIS_VERSION)
-        self.setWindowIcon(QIcon(resource_path('Delphinus_IAU.png')))
+        self.setWindowIcon(QIcon(resource_path('Delphinus_IAU_icon.png')))
         self.resize(1280, 800)
 
         self._dashboard = None  # Dashboard 页常驻: 重载数据页时保留终端输出
@@ -160,7 +160,8 @@ class MainWindow(QMainWindow):
                 mover=mover,
                 full_resolver=ds.orig_of_fin if title in fin_tabs else None,
                 full_boxes=shot_boxes if title in fin_tabs else None,
-                labels=(photo_labels if title == "Continuous Shots"
+                labels=(photo_labels if title in ("Continuous Shots",
+                                                  "Social Structure")
                         else (shot_labels if title in fin_tabs else None)),
                 orig_labels=photo_labels if (title in fin_tabs
                                              or title == "Continuous Shots")
@@ -269,13 +270,18 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         lay.addLayout(top)
         self._dolphin_stack = QStackedWidget()
-        self._dolphin_tab = DolphinTab()
+        viewers = dict(fin_lister=ds.dolphin_fins,
+                       fin_labels=ds.dolphin_fin_labels(),
+                       orig_resolver=ds.orig_of_fin,
+                       photo_boxes=shot_boxes,
+                       photo_labels=photo_labels)
+        self._dolphin_tab = DolphinTab(**viewers)
         self._dolphin_tab.show_dolphins(ds.dolphins(),
                                         social=ds.dolphin_social_map())
         self._dolphin_tab.dr_swapped.connect(self._swap_dolphin_dr)
         self._dolphin_tab.dr_dropped_on_empty.connect(
             self._create_dolphin_from_dr)
-        self._match_panel = MatchPanel(ds.dolphin_candidates)
+        self._match_panel = MatchPanel(ds.dolphin_candidates, **viewers)
         self._match_panel.assign_requested.connect(self._match_assign)
         self._match_panel.unmatch_requested.connect(self._match_unmatch)
         self._dolphin_stack.addWidget(self._dolphin_tab)
@@ -670,7 +676,10 @@ class MainWindow(QMainWindow):
             if title == "Social Structure" else None
         shot_boxes = ds.fin_boxes()
         shot_labels = ds.fin_shot_labels()
-        tab._labels = shot_labels if title in fin_tabs else {}
+        photo_labels = ds.photo_shot_labels()
+        tab._labels = photo_labels if title in ("Continuous Shots",
+                                                "Social Structure") \
+            else (shot_labels if title in fin_tabs else {})
         tab._full_boxes = shot_boxes if title in fin_tabs else {}
         if title == "Continuous Shots":
             boxes = shot_boxes

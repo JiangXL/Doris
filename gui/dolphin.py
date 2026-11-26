@@ -20,9 +20,44 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMimeData, QPoint, QRect, QRectF
 
 from .common import (
     ImageGrid, DolphinLoader, ThumbOverlayDelegate, ZoomableView,
-    ImageViewerDialog, open_image_viewer, MIME_PATHS, THUMB_SIZE, FIN_CELL_H,
+    open_image_viewer, open_fin_viewer, open_orig_viewer,
+    MIME_PATHS, THUMB_SIZE, FIN_CELL_H,
     BOX_COLORS, ThumbLoader
 )
+
+
+def _show_fin_viewer(parent, paths, current, labels):
+    """鳍裁剪图查看器: 组内翻页 + 标签叠加, 从 current 所在位置开始。"""
+    if not paths:
+        return
+    idx = paths.index(current) if current in paths else 0
+    open_image_viewer(open_fin_viewer(paths, idx, parent, labels=labels))
+
+
+def _show_orig_viewer(parent, fins, current, orig_resolver, boxes, labels):
+    """原图查看器: fins 映射到原图 (去重保序), 从 current 对应原图开始,
+    叠加鳍框/标签。"""
+    if orig_resolver is None or not fins:
+        return
+    origs = []
+    for p in fins:
+        o = orig_resolver(p)
+        if o and o not in origs:
+            origs.append(o)
+    if not origs:
+        return
+    cur = orig_resolver(current) if current else None
+    idx = origs.index(cur) if cur in origs else 0
+    open_image_viewer(open_orig_viewer(origs, idx, parent, boxes=boxes,
+                                       labels=labels))
+
+
+def _side_browse_set(fin_lister, name, cls, current):
+    """某海豚某侧的全部鳍图作为大图浏览集; 无提供者/无记录退回当前一张。"""
+    paths = fin_lister(name, cls) if fin_lister is not None else []
+    if paths:
+        return paths
+    return [current] if current else []
 
 class DolphinTab(QListWidget):
     """海豚配对页: 每只海豚占一格, 上=DL 鳍图, 下=DR 鳍图, 标题 Dphxxx。
@@ -35,9 +70,15 @@ class DolphinTab(QListWidget):
     DR_MIME = "application/x-doris-dolphin-dr"
     DOLPHIN_MIME = "application/x-doris-dolphin-cell"
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, fin_lister=None, fin_labels=None,
+                 orig_resolver=None, photo_boxes=None, photo_labels=None):
         super().__init__(parent)
         cell = FIN_CELL_H
+        self._fin_lister = fin_lister     # (DolphinID, DL/DR) -> [fin 路径]
+        self._fin_labels = fin_labels or {}   # fin 路径 -> 标注
+        self._orig_resolver = orig_resolver   # fin 路径 -> 原图路径
+        self._photo_boxes = photo_boxes or {} # 原图路径 -> 鳍框
+        self._photo_labels = photo_labels or {}  # 原图路径 -> 标注
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.setIconSize(QSize(THUMB_SIZE, cell * 2))  # 上下两格
@@ -121,9 +162,37 @@ class DolphinTab(QListWidget):
             item.setIcon(QIcon(QPixmap.fromImage(img)))
 
     # -- DR 格拖拽交换 -------------------------------------------------------
+    def _cell_side(self, event):
+        """落点所在格的海豚名 / 侧 (DL=上半, DR=下半) / 该侧鳍图路径;
+        空白处返回 (None, None, None)。"""
+        item = self.itemAt(event.position().toPoint())
+        if item is None:
+            return None, None, None
+        r = self.visualItemRect(item)
+        bottom = event.pos().y() > r.top() + r.height() // 2
+        name, dl_fid, dr_fid, dl, dr = item.data(Qt.ItemDataRole.UserRole)
+        return name, ("DR" if bottom else "DL"), (dr if bottom else dl)
+
+    def _open_fin_side(self, name, cls, path):
+        """双击鳍格: 鳍裁剪图查看器 (该海豚该侧全部鳍 + 标签)。"""
+        paths = _side_browse_set(self._fin_lister, name, cls, path)
+        _show_fin_viewer(self, paths, path, self._fin_labels)
+
+    def _open_orig_side(self, name, cls, path):
+        """中键鳍格: 原图查看器 (鳍框/标签叠加)。"""
+        fins = _side_browse_set(self._fin_lister, name, cls, path)
+        _show_orig_viewer(self, fins, path, self._orig_resolver,
+                          self._photo_boxes, self._photo_labels)
+
     def mousePressEvent(self, event):
         self._press_top = False
         self._press_bottom = False
+        if event.button() == Qt.MouseButton.MiddleButton:
+            name, cls, path = self._cell_side(event)
+            if path:
+                self._open_orig_side(name, cls, path)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(event.position().toPoint())
             if item is not None:
@@ -133,15 +202,10 @@ class DolphinTab(QListWidget):
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        """双击鳍图打开大图查看窗口: 上半格看 DL, 下半格看 DR。"""
-        item = self.itemAt(event.position().toPoint())
-        if item is not None:
-            r = self.visualItemRect(item)
-            bottom = event.pos().y() > r.top() + r.height() // 2
-            name, dl_fid, dr_fid, dl, dr = item.data(Qt.ItemDataRole.UserRole)
-            path = dr if bottom else dl
-            if path:
-                open_image_viewer(ImageViewerDialog([path], 0, self))
+        """双击鳍图打开鳍裁剪图查看器: 上半格看 DL, 下半格看 DR。"""
+        name, cls, path = self._cell_side(event)
+        if path:
+            self._open_fin_side(name, cls, path)
         super().mouseDoubleClickEvent(event)
 
     def startDrag(self, actions):
@@ -383,6 +447,13 @@ class FinSlot(QLabel):
                       event.position().toPoint())
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # 中键: 原图查看器 (鳍框/标签叠加)
+            panel = self.parent()
+            if isinstance(panel, MatchPanel):
+                panel.open_slot_orig(self)
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton and self.fid is not None:
             self._press = event.pos()
         super().mousePressEvent(event)
@@ -413,10 +484,12 @@ class FinSlot(QLabel):
                 self.dropped_out.emit(self.cls, str(self.fid))
         super().mouseMoveEvent(event)
 
-    # -- 双击打开大图查看窗口 --------------------------------------------------
+    # -- 双击/中键打开大图查看窗口 ---------------------------------------------
     def mouseDoubleClickEvent(self, event):
-        if self._path:
-            open_image_viewer(ImageViewerDialog([self._path], 0, self))
+        """双击: 鳍裁剪图查看器 (该海豚该侧全部鳍 + 标签)。"""
+        panel = self.parent()
+        if isinstance(panel, MatchPanel):
+            panel.open_slot_fin(self)
         super().mouseDoubleClickEvent(event)
 
     # -- 候选拖入 = 确认配对 --------------------------------------------------
@@ -468,6 +541,17 @@ class CandidateList(QListWidget):
         self._imgs = {}  # path -> 已加载的 QImage (重缩放用)
         self._labels = {}      # FinID -> sim 标签, 由 delegate 叠加
         self._orig_dims = {}   # FinID -> (原图宽, 原图高)
+        self._cand_fids = []   # 最近一批候选 (大图查看器浏览集)
+        self._cand_paths = []
+
+    def candidate_paths(self):
+        return list(self._cand_paths)
+
+    def candidate_label_map(self):
+        """候选鳍图路径 -> 'Fin001 sim=0.83' 标注 (fin 查看器用)。"""
+        return {p: self._labels[str(f)]
+                for f, p in zip(self._cand_fids, self._cand_paths)
+                if str(f) in self._labels}
 
     def show_candidates(self, fids, paths, labels):
         """(fids, paths, labels): 后台分片加载候选鳍缩略图,
@@ -477,6 +561,8 @@ class CandidateList(QListWidget):
         self.clear()
         self._items = {}
         self._imgs = {}
+        self._cand_fids = [str(f) for f in fids]
+        self._cand_paths = list(paths)
         self._labels = {str(f): labels[p]
                         for f, p in zip(fids, paths) if p in labels}
         self._orig_dims = {}
@@ -551,14 +637,29 @@ class CandidateList(QListWidget):
         drag.setPixmap(pm)
         drag.exec(Qt.DropAction.MoveAction)
 
-    # -- 双击打开大图查看窗口 --------------------------------------------------
+    # -- 双击/中键打开大图查看窗口 ---------------------------------------------
     def mouseDoubleClickEvent(self, event):
+        """双击: 鳍裁剪图查看器 (候选集 + 标签)。"""
         item = self.itemAt(event.position().toPoint())
         if item is not None:
             p = item.data(Qt.ItemDataRole.UserRole + 1)
-            if p:
-                open_image_viewer(ImageViewerDialog([p], 0, self))
+            panel = self.parent()
+            if p and isinstance(panel, MatchPanel):
+                panel.open_candidate_fin(p)
         super().mouseDoubleClickEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            # 中键: 原图查看器 (鳍框/标签叠加)
+            item = self.itemAt(event.position().toPoint())
+            if item is not None:
+                p = item.data(Qt.ItemDataRole.UserRole + 1)
+                panel = self.parent()
+                if p and isinstance(panel, MatchPanel):
+                    panel.open_candidate_orig(p)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     # -- 滚轮: 减小步长, 滚动更细腻 -------------------------------------------
     def wheelEvent(self, event):
@@ -595,10 +696,17 @@ class MatchPanel(QWidget):
     assign_requested = pyqtSignal(str, str, str)  # (dolphin name, cls, fid)
     unmatch_requested = pyqtSignal(str, str)      # (cls, fid)
 
-    def __init__(self, candidate_provider, parent=None):
+    def __init__(self, candidate_provider, parent=None, fin_lister=None,
+                 fin_labels=None, orig_resolver=None, photo_boxes=None,
+                 photo_labels=None):
         super().__init__(parent)
         # (fid, cls) -> (fids, paths, labels), 由 MainWindow 注入
         self._candidates_of = candidate_provider
+        self._fin_lister = fin_lister     # (DolphinID, DL/DR) -> [fin 路径]
+        self._fin_labels = fin_labels or {}   # fin 路径 -> 标注
+        self._orig_resolver = orig_resolver   # fin 路径 -> 原图路径
+        self._photo_boxes = photo_boxes or {} # 原图路径 -> 鳍框
+        self._photo_labels = photo_labels or {}  # 原图路径 -> 标注
         self._dolphins = []
         self._name = None      # 当前选中的海豚名
         self._cand_cls = None  # 候选鳍对应的侧 (当前海豚缺失的那侧)
@@ -676,6 +784,37 @@ class MatchPanel(QWidget):
 
     def current_name(self):
         return self._name
+
+    # -- 大图查看窗口 (鳍格/候选的双击与中键) -----------------------------------
+    def open_slot_fin(self, slot):
+        """双击鳍格: 鳍裁剪图查看器 (该海豚该侧全部鳍 + 标签)。"""
+        self._open_side_viewer(slot.cls, slot._path, orig=False)
+
+    def open_slot_orig(self, slot):
+        """中键鳍格: 原图查看器 (鳍框/标签叠加)。"""
+        self._open_side_viewer(slot.cls, slot._path, orig=True)
+
+    def open_candidate_fin(self, path):
+        """双击候选: 鳍裁剪图查看器 (候选集 + 标签)。"""
+        paths = [p for p in self.cand_list.candidate_paths() if p]
+        _show_fin_viewer(self, paths, path,
+                         self.cand_list.candidate_label_map())
+
+    def open_candidate_orig(self, path):
+        """中键候选: 原图查看器 (鳍框/标签叠加)。"""
+        fins = [p for p in self.cand_list.candidate_paths() if p]
+        _show_orig_viewer(self, fins, path, self._orig_resolver,
+                          self._photo_boxes, self._photo_labels)
+
+    def _open_side_viewer(self, cls, path, orig):
+        if self._name is None or not path:
+            return
+        fins = _side_browse_set(self._fin_lister, self._name, cls, path)
+        if orig:
+            _show_orig_viewer(self, fins, path, self._orig_resolver,
+                              self._photo_boxes, self._photo_labels)
+        else:
+            _show_fin_viewer(self, fins, path, self._fin_labels)
 
     def resizeEvent(self, event):
         """候选鳍图与中间列鳍格等大。"""
